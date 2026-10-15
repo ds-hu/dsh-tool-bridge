@@ -302,7 +302,7 @@ export function registerBridgeTools(ctx: Context, engine: BridgeEngine, config: 
     defineTool({
       name: 'bridge_run',
       description: [
-        'Run a toolchain command that the file sandbox denies, outside that sandbox: `flutter`/`dart` (any subcommand), a guard-railed `git`, a package manager (`pnpm`, `npm`, `npx`), or the project\'s own `vite`/`vitest`/`svelte-check`/`svelte-kit`/`tsc` from its node_modules.',
+        'Run a toolchain command that the file sandbox denies, outside that sandbox: `flutter`/`dart` (any subcommand), a guard-railed `git`, a package manager (`pnpm`, `npm`, `npx`), a project\'s Gradle wrapper (`gradlew`, run through the wrapper jar under `JAVA_HOME`\'s java — never the `.bat` — with a forced `--no-daemon`, so nothing resident survives the job), or the project\'s own `vite`/`vitest`/`svelte-check`/`svelte-kit`/`tsc` from its node_modules.',
         'Prefer it over the shell tools for those commands: the shell runs inside the sandbox, where the Flutter SDK cannot take its own lockfile and where a Node toolchain dies on `spawn EPERM` (the sandbox denies the named pipes libuv needs for child stdio).',
         'A refused command is a deliberate answer, not a bug: `dart run` is not confined by anything here, so the refusals bound *recoverable surprise* (`git restore .`, `reset --hard`, `git push`, `pnpm exec <anything>`, a cwd-retargeting flag), not reachability.',
         'Test runs come back digested: `summary`, `counts` and the complete `failures` inventory, plus a `baseline` split against the project\'s `.toolbridge/known-failures.json` — `baseline.newFailures` names the failures your change introduced, and a failure is yours unless the registry claimed it.',
@@ -314,7 +314,7 @@ export function registerBridgeTools(ctx: Context, engine: BridgeEngine, config: 
         cmd: {
           type: 'string',
           required: true,
-          description: 'The command: flutter, dart, git, pnpm, npm, npx, vite, vitest, svelte-check, svelte-kit or tsc.',
+          description: 'The command: flutter, dart, git, pnpm, npm, npx, gradlew, vite, vitest, svelte-check, svelte-kit or tsc.',
         },
         args: {
           type: 'array',

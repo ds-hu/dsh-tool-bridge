@@ -263,6 +263,99 @@ describe('script binary launch', () => {
   })
 })
 
+describe('gradlew launch', () => {
+  // The wrapper jar is launched under JAVA_HOME's java — never `gradlew.bat`,
+  // which would put cmd.exe back in the middle of an argv that is supposed to
+  // have no shell. `which` is pinned to an empty table (and one test makes any
+  // call fail outright): the gradle branch must not consult PATH at all, the
+  // fixture-pin lesson ADR-0006 learned the hard way.
+  const ROOT = join(SCRATCH, 'gradle-root')
+  const RN = join(SCRATCH, 'gradle-rn')
+  const JAVA_HOME = join(SCRATCH, 'jdk')
+  const JAVA = join(JAVA_HOME, 'bin', 'java.exe')
+  const which = patchedWhich({})
+
+  beforeAll(() => {
+    writeFile(join(ROOT, 'gradle', 'wrapper', 'gradle-wrapper.jar'), 'fake wrapper')
+    writeFile(join(RN, 'android', 'gradle', 'wrapper', 'gradle-wrapper.jar'), 'fake wrapper')
+    writeFile(JAVA)
+  })
+
+  it('launches the wrapper jar under JAVA_HOME, never a shell', () => {
+    const jar = join(ROOT, 'gradle', 'wrapper', 'gradle-wrapper.jar')
+    const launch = resolveLaunch(
+      ['gradlew', '--no-daemon', ':app:help'], null, ROOT, which, JAVA_HOME,
+    )
+    expect(launch.argv).toEqual([
+      JAVA,
+      '-Dorg.gradle.appname=gradlew',
+      '-classpath',
+      jar,
+      'org.gradle.wrapper.GradleWrapperMain',
+      '--no-daemon',
+      ':app:help',
+    ])
+    expect(launch.env).toEqual({})
+    // The core claim as a standing assertion, not a comment: no shell, no
+    // wrapper script, anywhere in the argv.
+    for (const token of launch.argv) {
+      const lowered = token.toLowerCase()
+      expect(lowered).not.toContain('cmd.exe')
+      expect(lowered).not.toMatch(/\.(bat|cmd)$/)
+    }
+    // And the generation claim: `-jar` is deliberately *not* used, because it
+    // needs a Main-Class attribute that two of the three wrapper jars measured
+    // on this machine do not carry (their scripts name the main class on
+    // -classpath, which works for both generations).
+    expect(launch.argv).not.toContain('-jar')
+  })
+
+  it('resolves the wrapper from a guarded -p target', () => {
+    const launch = resolveLaunch(
+      ['gradlew', '--no-daemon', '-p', 'android', ':app:help'], null, RN, which, JAVA_HOME,
+    )
+    expect(launch.argv[3]).toBe(join(RN, 'android', 'gradle', 'wrapper', 'gradle-wrapper.jar'))
+    expect(launch.argv.slice(5)).toEqual(['--no-daemon', '-p', 'android', ':app:help'])
+  })
+
+  it('treats a quoted JAVA_HOME as the same JDK', () => {
+    const launch = resolveLaunch(
+      ['gradlew', ':app:help'], null, ROOT, which, `"${JAVA_HOME}"`,
+    )
+    expect(launch.argv[0]).toBe(JAVA)
+  })
+
+  it('names the missing jar when the cwd is not a Gradle root', () => {
+    // The RN root holds the wrapper in android/, not in itself.
+    expect(() => resolveLaunch(['gradlew', ':app:help'], null, RN, which, JAVA_HOME)).toThrow(
+      'gradle-wrapper.jar',
+    )
+  })
+
+  it('refuses an unset JAVA_HOME instead of falling back to PATH', () => {
+    expect(() => resolveLaunch(['gradlew', ':app:help'], null, ROOT, which, null)).toThrow(
+      'JAVA_HOME',
+    )
+  })
+
+  it('refuses a JAVA_HOME without bin/java.exe', () => {
+    const bare = join(SCRATCH, 'jdk-bare')
+    expect(() => resolveLaunch(['gradlew', ':app:help'], null, ROOT, which, bare)).toThrow(
+      'JAVA_HOME',
+    )
+  })
+
+  it('never consults PATH', () => {
+    // A leak to the real machine's toolchain would pass without its own
+    // fixture; a throwing which makes any consultation fatal.
+    const thrower = () => {
+      throw new Error('which must not be called for gradlew')
+    }
+    const launch = resolveLaunch(['gradlew', ':app:help'], null, ROOT, thrower, JAVA_HOME)
+    expect(launch.argv[0]).toBe(JAVA)
+  })
+})
+
 describe('pnpm launch', () => {
   // `pnpm` on PATH is a wrapper, so its JavaScript entry is launched.
   const ROOT = join(SCRATCH, 'pnpm')

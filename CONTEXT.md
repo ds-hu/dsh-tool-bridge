@@ -96,8 +96,8 @@ _Avoid_: per-request exe, SDK override, toolchain pin (too broad: `dart analyze`
 
 **Allowlist**:
 The set of executables (`flutter`, `dart`, `git`, the **Package managers**, `npx`,
-and the **Script binaries**) and the git/package-manager verbs the **Toolchain
-half** accepts.
+`gradlew`, and the **Script binaries**) and the git/package-manager verbs the
+**Toolchain half** accepts.
 _Avoid_: sandbox, security boundary, whitelist, permission system
 
 **Guardrail**:
@@ -141,6 +141,16 @@ directory**'s `node_modules` by reading the package's `bin` field — never thro
 the `.cmd` wrapper, which would put `cmd.exe` in the middle of an argv that is
 supposed to have no shell.
 _Avoid_: local binary, npx tool, node_modules/.bin (that is the wrapper, which is exactly what is bypassed)
+
+**Wrapper entry**:
+The project's own Gradle wrapper jar (`gradle/wrapper/gradle-wrapper.jar`),
+accepted as `gradlew` and launched under `JAVA_HOME`'s `java.exe` — never through
+`gradlew.bat`, which would put `cmd.exe` in the middle of an argv that is supposed
+to have no shell (the **Script binary** rule, one toolchain over). Resolved in the
+**Working directory** or in the guarded `-p` directory inside it; the JVM comes
+from `JAVA_HOME` only, never PATH. Every argv carries a forced `--no-daemon`,
+normalised at submit time, so a settled job leaves nothing resident behind.
+_Avoid_: script binary (that is the Node one), gradle CLI (not on PATH — the wrapper is the only entry), daemon (there is none; the flag forbids it)
 
 **Uncommitted scope**:
 The `scope: "uncommitted"` value: the **Working directory**'s uncommitted `.dart`
@@ -437,6 +447,7 @@ kept under that term.
 - `bridge_arb_edit` is a **Job**: it queues, logs and is killed like any other, its `argv` is a display line, and its **`result`** is what a **Digest** cannot express.
 - `bridge_arb_edit` runs in the **Working directory**; its body carries no `cwd`, and a missing anchor fails the **Plan phase** with zero files touched.
 - A **Script binary** is resolved in the **Working directory** and runs under `node`; an **Exec form** accepts one of those names and nothing else.
+- A **Wrapper entry** is resolved in the **Working directory** or a guarded `-p` directory inside it and runs under `JAVA_HOME`; a `gradlew` **Job** is a **Queue** job whose argv carries a normalised `--no-daemon`, so "settled" and "nothing resident left" stay the same instant (ADR-0013).
 - A **Package manager** is chosen by the caller; a **Run shorthand** is normalised to `run <script>` before the **Long lane** guess, the job JSON and the **Digest** read the argv, so a shorthand is never a second surface.
 - The two **Package managers** share one retargeting guard but not one verb set; a lockfile is advisory, so naming the manager is the caller's call and the other manager's lockfile may be written by mistake.
 - A **Known-failure registry** is read per **Job** from the **Working directory**; with no registry there is no **Baseline report** at all.

@@ -17,7 +17,9 @@
  */
 export const SCRIPT_BINARIES = new Set(['vite', 'vitest', 'svelte-check', 'svelte-kit', 'tsc'])
 
-export const ALLOWED_EXES = new Set(['flutter', 'dart', 'git', 'npm', 'npx', 'pnpm', ...SCRIPT_BINARIES])
+export const ALLOWED_EXES = new Set([
+  'flutter', 'dart', 'git', 'npm', 'npx', 'pnpm', 'gradlew', ...SCRIPT_BINARIES,
+])
 
 /**
  * PACKAGE_MANAGERS — both package managers are accepted on the same terms: the
@@ -131,6 +133,59 @@ export const PACKAGE_MANAGER_GLOBAL_LOCATIONS = new Set(['global', 'user'])
  * script binary and these flags stay out.
  */
 export const EXEC_BLOCKED_FLAGS = new Set(['-c', '--shell-mode', '-p', '--package'])
+
+/**
+ * Why each refused Gradle flag is refused, keyed by the flag. The key set is
+ * `GRADLE_BLOCKED_FLAGS`, so the refusal and the table cannot drift apart —
+ * the pairing this file's own header asks for.
+ *
+ * There is no verb list beside this: Gradle task names are the project's own
+ * and cannot be enumerated, and a task can run arbitrary build-script code
+ * anyway — the same terms `dart run` is accepted on (the Allowlist is a
+ * Guardrail, not a privilege boundary; ADR-0001). What is refused is the flag
+ * that redirects an anchor a job runs under (the working directory, the
+ * project, the machine's Gradle state) or opens arbitrary execution.
+ */
+export const GRADLE_FLAG_REASONS: Readonly<Record<string, string>> = {
+  '-g': "it moves Gradle's user home — machine-level caches and the daemon registry — off the default the developer's own builds share",
+  '--gradle-user-home': "it moves Gradle's user home — machine-level caches and the daemon registry — off the default the developer's own builds share",
+  '--project-cache-dir': 'it puts the project cache outside the pinned working directory',
+  '-I': 'it runs an arbitrary script before the build — general execution behind an allowlisted name, the reason `pnpm exec` is narrowed',
+  '--init-script': 'it runs an arbitrary script before the build — general execution behind an allowlisted name, the reason `pnpm exec` is narrowed',
+  '-c': 'it points the build at a settings file other than the project\'s own',
+  '--settings-file': 'it points the build at a settings file other than the project\'s own',
+  '-b': 'it points the build at a build file other than the project\'s own',
+  '--build-file': 'it points the build at a build file other than the project\'s own',
+  '-D': 'system properties reach org.gradle.java.home and friends — machine-level redirection; the project\'s gradle.properties is the supported home for those',
+  '--daemon': 'every gradlew argv is normalised to --no-daemon so a settled job leaves nothing behind',
+  '-t': 'it is a watcher that never terminates; a build is a queue job',
+  '--continuous': 'it is a watcher that never terminates; a build is a queue job',
+  '--stop': "it manages the machine's shared Gradle daemons — state this surface never creates, so it does not manage it either",
+  '--status': "it manages the machine's shared Gradle daemons — state this surface never creates, so it does not manage it either",
+}
+
+/** The flags `validateGradle` refuses; the reasons live one map up. */
+export const GRADLE_BLOCKED_FLAGS = new Set(Object.keys(GRADLE_FLAG_REASONS))
+
+/**
+ * The Gradle flags whose *value* decides: `-P`/`--project-prop` set a project
+ * property, and the `org.gradle.*` key space is the same redirection `-D` is
+ * refused for (`-Porg.gradle.java.home=…` picks the JVM the build runs on).
+ * The npm `--location` guard is the precedent: judge the value, not the name.
+ */
+export const GRADLE_PROPERTY_FLAGS = new Set(['-P', '--project-prop'])
+export const GRADLE_RESERVED_PROPERTY_PREFIX = 'org.gradle.'
+
+/**
+ * The one Gradle flag that names another directory and is guarded rather than
+ * refused: the wrapper and its project may live one level below the working
+ * directory (the React Native layout keeps them in `android/`), and a relative
+ * `-p android` stays inside the pinned cwd the way `git restore --
+ * lib/a.dart` stays inside the worktree. The guard applies the Pathspec
+ * rules: literal, relative, no `..`, no bare `.`, no wildcards, no absolute
+ * path.
+ */
+export const GRADLE_PROJECT_DIR_FLAGS = new Set(['-p', '--project-dir'])
 
 /** The two lanes a job may run on. */
 export const LANE_QUEUE = 'queue'

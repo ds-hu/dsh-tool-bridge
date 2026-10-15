@@ -22,6 +22,35 @@ export function commandName(cmd: string): string {
   return exe
 }
 
+/**
+ * The value a flag token carries, as the flag's own argument, or null.
+ *
+ * Reads the three shapes a value travels in: attached to a short flag
+ * (`-pdir`), joined by `=` (`--project-dir=dir`), and the following token
+ * (`-p dir`, `--project-dir dir`). A flag at the end of the argv has no
+ * following token and answers null — whatever the tool itself does with that
+ * is the tool's error to make. Both callers read it after `--` has ended the
+ * flag region, so a task argument that merely looks like a value is never
+ * picked up here.
+ */
+export function flagValue(
+  token: string,
+  flag: string,
+  args: readonly string[],
+  index: number,
+): string | null {
+  if (token === flag) {
+    return args[index + 1] ?? null
+  }
+  if (token.startsWith(`${flag}=`)) {
+    return token.slice(flag.length + 1)
+  }
+  if (flag.length === 2 && token.startsWith(flag) && token.length > flag.length) {
+    return token.slice(flag.length)
+  }
+  return null
+}
+
 /** Whether argv is a `flutter test` / `dart test` invocation. */
 export function isTestRun(argv: readonly string[]): boolean {
   if (argv.length < 2) return false

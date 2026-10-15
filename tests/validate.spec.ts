@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { RefusalError } from '../src/engine/errors'
-import { SCRIPT_BINARIES } from '../src/engine/surface'
+import { GRADLE_BLOCKED_FLAGS, SCRIPT_BINARIES } from '../src/engine/surface'
 import { buildArgv, validate } from '../src/engine/validate'
 
 /**
@@ -361,5 +361,146 @@ describe('npm surface (NpmSurfaceTests)', () => {
     // Two managers, one guard — but a refusal always names which one.
     const message = refusal(() => validate(['pnpm', 'install', '-g', 'typescript']))
     expect(message.startsWith('pnpm flag not allowed')).toBe(true)
+  })
+})
+
+describe('gradlew surface (GradleSurfaceTests)', () => {
+  // No verb list: the task name is the project's own. What is refused is the
+  // flag that redirects an anchor or opens execution — plus two value guards:
+  // `-p` (a relative project directory inside the cwd, the RN layout keeps
+  // the wrapper one level down) and `-P` (judged by its key, because
+  // `org.gradle.*` is the redirect `-D` is refused for).
+  const ALLOWED: string[][] = [
+    ['gradlew', ':app:assembleDebug'],
+    ['gradlew', ':app:assembleDebug', '-PreactNativeArchitectures=x86_64'],
+    ['gradlew', '-P', 'reactNativeArchitectures=x86_64', ':app:assembleDebug'],
+    ['gradlew', '--project-prop', 'reactNativeArchitectures=x86_64', ':app:assembleDebug'],
+    ['gradlew', '--project-prop=reactNativeArchitectures=x86_64', ':app:assembleDebug'],
+    ['gradlew', '--no-daemon', ':app:help'],
+    ['gradlew', '-p', 'android', ':app:help'],
+    ['gradlew', '-pandroid', ':app:help'],
+    ['gradlew', '--project-dir=android', ':app:help'],
+    ['gradlew', '--project-dir', 'android', ':app:help'],
+    ['gradlew', '--offline', '--console=plain', ':app:assembleDebug'],
+    // `--` ends the flag surface: what follows belongs to the task.
+    ['gradlew', ':app:help', '--', '-g', 'elsewhere'],
+    ['gradlew', ':app:help', '--', '-Dorg.gradle.java.home=C:\\jdk17'],
+    ['gradlew', ':app:help', '--', '--stop'],
+  ]
+
+  const REFUSED: string[][] = [
+    ['gradlew', '-g', 'C:\\elsewhere'],
+    ['gradlew', '-gC:\\elsewhere'],
+    ['gradlew', '--gradle-user-home', 'C:\\elsewhere'],
+    ['gradlew', '--gradle-user-home=C:\\elsewhere'],
+    ['gradlew', '--project-cache-dir', 'elsewhere'],
+    ['gradlew', '-I', 'x.gradle'],
+    ['gradlew', '-Ix.gradle'],
+    ['gradlew', '--init-script=x.gradle'],
+    ['gradlew', '-c', 'other.settings.gradle'],
+    ['gradlew', '--settings-file=x'],
+    ['gradlew', '-b', 'other.build.gradle'],
+    ['gradlew', '--build-file=x'],
+    // Every -D is refused, not just org.gradle.*: the legitimate ones have a
+    // project-side home in gradle.properties.
+    ['gradlew', '-Dorg.gradle.java.home=C:\\jdk17'],
+    ['gradlew', '-Dfile.encoding=UTF-8'],
+    ['gradlew', '-D', 'org.gradle.java.home=C:\\jdk17'],
+    // ...and -P is judged by its key, the --location precedent.
+    ['gradlew', '-Porg.gradle.java.home=C:\\jdk17'],
+    ['gradlew', '-P', 'org.gradle.java.home=C:\\jdk17'],
+    ['gradlew', '--project-prop', 'org.gradle.java.home=C:\\jdk17'],
+    ['gradlew', '--project-prop=org.gradle.java.home=C:\\jdk17'],
+    ['gradlew', '-Porg.gradle.daemon=true', ':app:help'],
+    ['gradlew', '--daemon'],
+    ['gradlew', '-t', ':app:help'],
+    ['gradlew', '--continuous'],
+    ['gradlew', '--stop'],
+    ['gradlew', '--status'],
+    // The guarded -p: the literal-path rules, same as git restore pathspecs.
+    ['gradlew', '-p', '..'],
+    ['gradlew', '-p', '../elsewhere'],
+    ['gradlew', '-p..'],
+    ['gradlew', '-p', 'C:\\abs'],
+    ['gradlew', '-p', '.'],
+    ['gradlew', '-p', 'a*b'],
+    ['gradlew', '--project-dir=..'],
+    ['gradlew', '--project-dir', '/rooted'],
+  ]
+
+  it('allows the documented forms', () => {
+    for (const argv of ALLOWED) {
+      validate([...argv])
+    }
+  })
+
+  it('refuses everything else', () => {
+    for (const argv of REFUSED) {
+      refusal(() => validate([...argv]))
+    }
+  })
+
+  it('normalises --no-daemon into every argv, exactly once', () => {
+    // The job JSON must read the argv that runs: the Run shorthand rule.
+    const cases: ReadonlyArray<readonly [string[], string[]]> = [
+      [['gradlew', ':app:help'], ['gradlew', '--no-daemon', ':app:help']],
+      [['gradlew', ':app:assembleDebug', '-PreactNativeArchitectures=x86_64'],
+        ['gradlew', '--no-daemon', ':app:assembleDebug', '-PreactNativeArchitectures=x86_64']],
+      // A caller's own flag is not duplicated.
+      [['gradlew', '--no-daemon', ':app:help'], ['gradlew', '--no-daemon', ':app:help']],
+      // After `--` it is a task argument, so the bridge injects its own.
+      [['gradlew', ':app:help', '--', '--no-daemon'],
+        ['gradlew', '--no-daemon', ':app:help', '--', '--no-daemon']],
+    ]
+    for (const [argv, want] of cases) {
+      const normalised = [...argv]
+      validate(normalised)
+      expect(normalised, `argv=${JSON.stringify(argv)}`).toEqual(want)
+    }
+  })
+
+  it('says why each blocked flag is refused', () => {
+    // The reasons live beside the table; a refusal without its why is a
+    // message the caller cannot act on.
+    const message = refusal(() => validate(['gradlew', '-I', 'x.gradle']))
+    expect(message).toContain('arbitrary script')
+  })
+
+  it('refuses every flag in the table from the gradlew surface itself', () => {
+    // Table-driven on purpose: a flag added to the set with no reason of its
+    // own fails here, and no case can pass by taking the generic
+    // "command not allowed" path instead of the gradle guard.
+    const flags = [...GRADLE_BLOCKED_FLAGS].sort()
+    expect(flags.length).toBeGreaterThan(0)
+    for (const flag of flags) {
+      const message = refusal(() => validate(['gradlew', flag]))
+      expect(message, `flag=${flag}`).toContain('gradlew flag not allowed')
+      expect(message, `flag=${flag}`).not.toContain('not on the gradlew surface')
+    }
+  })
+
+  it('judges -P by its key, like npm --location by its value', () => {
+    const message = refusal(() => validate(['gradlew', '-Porg.gradle.java.home=C:\\jdk17']))
+    expect(message).toContain('org.gradle')
+    expect(message).toContain('gradle.properties')
+  })
+
+  it('keeps the daemon-management flags out with their reason', () => {
+    for (const flag of ['--stop', '--status']) {
+      const message = refusal(() => validate(['gradlew', flag]))
+      expect(message, `flag=${flag}`).toContain('daemons')
+    }
+  })
+
+  it('guards -p with the literal-path rules', () => {
+    const message = refusal(() => validate(['gradlew', '-p', '..', ':app:help']))
+    expect(message).toContain('the gradlew project directory')
+    expect(message).toContain('..')
+  })
+
+  it('treats gradlew.bat and .\\gradlew as the same command', () => {
+    const argv = ['gradlew.bat', ':app:help']
+    validate(argv)
+    expect(argv[1]).toBe('--no-daemon')
   })
 })

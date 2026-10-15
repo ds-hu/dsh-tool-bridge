@@ -16,7 +16,7 @@
  *   is kept only for a caller that reaches the function directly.
  */
 
-import { commandName } from './argv'
+import { commandName, flagValue } from './argv'
 import { refuse } from './errors'
 import {
   ALLOWED_EXES,
@@ -24,6 +24,11 @@ import {
   GIT_ALLOWED_FLAGS,
   GIT_BLOCKED_FLAGS,
   GIT_VERBS,
+  GRADLE_BLOCKED_FLAGS,
+  GRADLE_FLAG_REASONS,
+  GRADLE_PROJECT_DIR_FLAGS,
+  GRADLE_PROPERTY_FLAGS,
+  GRADLE_RESERVED_PROPERTY_PREFIX,
   MESSAGE_SOURCE_FLAGS,
   NPM_RUN_SHORTHANDS,
   PACKAGE_MANAGER_BLOCKED_FLAGS,
@@ -111,6 +116,11 @@ export function validate(argv: string[]): void {
     validateGit(argv.slice(1))
     return
   }
+  if (exe === 'gradlew') {
+    ensureNoDaemon(argv)
+    validateGradle(argv.slice(1))
+    return
+  }
   if (PACKAGE_MANAGERS.has(exe)) {
     validatePackageManager(exe, argv.slice(1))
     return
@@ -172,6 +182,31 @@ export function shorthandToRun(argv: string[]): void {
   const shorthand = argv[1]
   if (shorthand !== undefined && NPM_RUN_SHORTHANDS.has(shorthand)) {
     argv.splice(1, 0, 'run')
+  }
+}
+
+/**
+ * Normalises the forced `--no-daemon` into every `gradlew` argv.
+ *
+ * Inserted at index 1 — directly behind the command — so a caller's `--`
+ * (after which everything belongs to the task, not to Gradle) cannot swallow
+ * it: appended at the end, `gradlew :app:help -- --foo` would carry a
+ * `--no-daemon` the task reads and Gradle never sees, and a daemon would
+ * start behind an exit 0. Idempotent over the pre-`--` region only: a
+ * `--no-daemon` the caller typed there is the same flag, while one after
+ * `--` is a task argument and does not count. Done here, during validation,
+ * for the reason the npm shorthands are rewritten here: the job JSON, the
+ * lane guess and the log all read the argv that actually runs.
+ */
+export function ensureNoDaemon(argv: string[]): void {
+  const head = argv[0]
+  if (head === undefined || commandName(head) !== 'gradlew') {
+    return
+  }
+  const separator = argv.indexOf('--')
+  const surface = separator >= 0 ? argv.slice(0, separator) : argv
+  if (!surface.includes('--no-daemon')) {
+    argv.splice(1, 0, '--no-daemon')
   }
 }
 
@@ -368,6 +403,63 @@ export function verbRefusal(verb: string): string {
   return message
 }
 
+/** Why a refused Gradle flag is refused; the reasons live beside the table. */
+export function gradleFlagRefusal(flag: string): string {
+  return `gradlew flag not allowed: ${repr(flag)} — ${GRADLE_FLAG_REASONS[flag] ?? 'not on the gradlew surface'}`
+}
+
+/** Why an `org.gradle.*` project property is refused while `-P` itself is not. */
+export function gradlePropertyRefusal(property: string): string {
+  return (
+    `gradlew property not allowed: ${repr(property)} — the 'org.gradle.*' key space ` +
+    'redirects the build the same way -D does (java.home picks the build JVM); ' +
+    "set it in the project's gradle.properties instead"
+  )
+}
+
+/**
+ * The `gradlew` surface: no verb list, a flag deny list, and two guarded
+ * members.
+ *
+ * Gradle task names are the project's own and cannot be enumerated, so no
+ * allow list is consulted — a task can run arbitrary build-script code
+ * anyway, which is the same terms `dart run` is accepted on (the Allowlist is
+ * a Guardrail, not a privilege boundary; ADR-0001). What is refused is the
+ * flag that redirects an anchor (`GRADLE_BLOCKED_FLAGS`), plus two value
+ * guards: `-P`/`--project-prop` is judged by its key (`org.gradle.*` is the
+ * redirect `-D` is refused for) and `-p`/`--project-dir` must satisfy the
+ * literal-path rules, because the React Native layout keeps the wrapper one
+ * level below the working directory and a relative `-p android` stays inside
+ * the pinned cwd the way `git restore -- lib/a.dart` stays inside the
+ * worktree. Scanning stops at `--`, whose task arguments may spell anything.
+ */
+export function validateGradle(args: readonly string[]): void {
+  for (const [index, token] of args.entries()) {
+    if (token === '--') {
+      return
+    }
+    if (!token.startsWith('-')) {
+      continue
+    }
+    const hit = blockedFlag(token, GRADLE_BLOCKED_FLAGS)
+    if (hit !== null) {
+      refuse(403, gradleFlagRefusal(hit))
+    }
+    const property = [...GRADLE_PROPERTY_FLAGS]
+      .map((flag) => flagValue(token, flag, args, index))
+      .find((value) => value !== null)
+    if (property !== undefined && property.startsWith(GRADLE_RESERVED_PROPERTY_PREFIX)) {
+      refuse(403, gradlePropertyRefusal(property))
+    }
+    for (const flag of GRADLE_PROJECT_DIR_FLAGS) {
+      const dir = flagValue(token, flag, args, index)
+      if (dir !== null) {
+        guardLiteralPath(dir, 'the gradlew project directory', 'a directory')
+      }
+    }
+  }
+}
+
 /**
  * Whether a flag token sets only allow-listed flags.
  *
@@ -405,22 +497,24 @@ function escapesWorktree(spec: string): boolean {
  * `git restore` discards uncommitted work irrecoverably, so the only shape this
  * bridge accepts is "these named files, please": no pathspec magic, no globs,
  * no absolute paths, no `..`, and no bare `.` (which is the whole worktree).
+ * The gradlew `-p` guard reuses the same rules with its own subject and noun,
+ * which is why both are parameters: one rule, two wordings, no drift.
  */
-export function guardRestorePathspec(spec: string): void {
+export function guardLiteralPath(spec: string, what: string, noun: string): void {
   if (!spec) {
-    refuse(403, 'git restore pathspec must not be empty')
+    refuse(403, `${what} must not be empty`)
   }
   if (spec.startsWith(':')) {
-    refuse(403, `git restore pathspec magic is not allowed: ${repr(spec)}`)
+    refuse(403, `${what} magic is not allowed: ${repr(spec)}`)
   }
   if (escapesWorktree(spec)) {
-    refuse(403, `git restore pathspec must be relative: ${repr(spec)}`)
+    refuse(403, `${what} must be relative: ${repr(spec)}`)
   }
   const wildcard = [...new Set([...spec].filter((char) => PATHSPEC_WILDCARDS.has(char)))].sort()
   if (wildcard.length > 0) {
     refuse(
       403,
-      'git restore pathspec must name files, not a pattern: ' +
+      `${what} must name ${noun}, not a pattern: ` +
         `${repr(spec)} contains ${repr(wildcard.join(''))}`,
     )
   }
@@ -428,10 +522,14 @@ export function guardRestorePathspec(spec: string): void {
   if (parts.length === 0 || parts.includes('..')) {
     refuse(
       403,
-      'git restore pathspec must name files inside the working ' +
-        `directory: ${repr(spec)}`,
+      `${what} must name ${noun} inside the working ` + `directory: ${repr(spec)}`,
     )
   }
+}
+
+/** `guardLiteralPath` as `git restore` worded it, for the restore surface. */
+export function guardRestorePathspec(spec: string): void {
+  guardLiteralPath(spec, 'git restore pathspec', 'files')
 }
 
 /** The `restore` surface: an allow-listed flag set and literal pathspecs. */

@@ -22,9 +22,10 @@
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { basename, delimiter, dirname, join, sep } from 'node:path'
 
-import { commandName, execTarget } from './argv'
+import { commandName, execTarget, flagValue } from './argv'
 import { ToolFailure } from './errors'
 import {
+  GRADLE_PROJECT_DIR_FLAGS,
   LONG_SCRIPTS,
   NODE_INSTALL_ENTRIES,
   PACKAGE_MANAGER_ENTRIES,
@@ -248,6 +249,7 @@ export function resolveLaunch(
   dartFormatExe: string | null = null,
   cwd: string | null = null,
   which: WhichFn = whichOnPath,
+  javaHome: string | null = process.env['JAVA_HOME'] ?? null,
 ): Launch {
   const pin = dartFormatTarget(argv, dartFormatExe)
   if (pin !== null) {
@@ -263,6 +265,11 @@ export function resolveLaunch(
     // what the caller can actually fix.
     const target = resolveScriptBinary(cwd ?? process.cwd(), name)
     return { argv: [nodeExe(which), target, ...argv.slice(1)], env: {} }
+  }
+  if (name === 'gradlew') {
+    // The wrapper jar belongs to the project, so it resolves from the pinned
+    // cwd (or the guarded `-p` directory inside it) rather than from PATH.
+    return resolveGradleWrapper(cwd ?? process.cwd(), argv.slice(1), javaHome)
   }
   if (PACKAGE_MANAGER_RUNNERS.has(name)) {
     return { argv: [...resolvePackageManager(name, which), ...argv.slice(1)], env: {} }
@@ -359,6 +366,112 @@ export function resolveScriptBinary(cwd: string, name: string): string {
     throw new ToolFailure(`${name} entry point is missing: ${target}`)
   }
   return target
+}
+
+/**
+ * The class that is a Gradle wrapper jar's real entry point, in every wrapper
+ * generation measured.
+ *
+ * The launch names it on `-classpath` instead of leaning on `java -jar`: the
+ * newer wrapper scripts use `-jar`, which needs a `Main-Class` manifest
+ * attribute, and **two of the three wrapper jars measured on this machine do
+ * not have one** (their scripts use `-classpath … GradleWrapperMain`, and
+ * `java -jar` answers "no main manifest attribute"). The class itself is
+ * present in all three, so the classpath form covers both generations while
+ * `-jar` covers only the newer one — the same unwrap-the-wrapper reasoning
+ * that picks the real dart.exe behind `flutter.bat`.
+ */
+const GRADLE_WRAPPER_MAIN = 'org.gradle.wrapper.GradleWrapperMain'
+
+/**
+ * How to launch a `gradlew` argv: the project's own wrapper jar under
+ * `JAVA_HOME`'s java, never `gradlew.bat`.
+ *
+ * `gradlew.bat` wraps one line — `"%JAVA_EXE%" … -classpath
+ * "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" org.gradle.wrapper.
+ * GradleWrapperMain %*` in the older generation, `-jar` in the newer — so the
+ * bridge runs that line itself: `cmd.exe` stays out of an argv that is
+ * supposed to have no shell (the **Script binary** rule), and the wrapper
+ * self-locates from the jar's own position, so no environment additions are
+ * needed. The JVM comes from `JAVA_HOME` only and never from PATH, because a
+ * React Native toolchain is strict about its JDK and a PATH java may be the
+ * wrong one entirely; the jar is required rather than searched for upward,
+ * because a job runs in one known directory (ADR-0002). `args` arrive already
+ * normalised, carrying the forced `--no-daemon` from validation.
+ *
+ * Throws {@link ToolFailure} when the wrapper jar or the JDK is missing.
+ */
+export function resolveGradleWrapper(
+  cwd: string,
+  args: readonly string[],
+  javaHome: string | null,
+): Launch {
+  const jar = join(cwd, gradleProjectDir(args), 'gradle', 'wrapper', 'gradle-wrapper.jar')
+  if (!isFile(jar)) {
+    throw new ToolFailure(
+      'the working directory is not a Gradle project root: ' +
+        `${jar} is missing — start the session in the Gradle root, or name it ` +
+        "with a relative '-p <dir>' inside the working directory",
+    )
+  }
+  return {
+    argv: [
+      gradleJavaExe(javaHome),
+      '-Dorg.gradle.appname=gradlew',
+      '-classpath',
+      jar,
+      GRADLE_WRAPPER_MAIN,
+      ...args,
+    ],
+    env: {},
+  }
+}
+
+/**
+ * The relative project directory a `gradlew` argv names, if any.
+ *
+ * `validateGradle` has already judged its shape (the literal-path rules); this
+ * reads the value the same three ways `flagValue` does, so the jar resolves
+ * from the project the caller named. The *last* one wins, which is how Gradle
+ * itself resolves repeats, and reading stops at `--` alongside the flag
+ * surface.
+ */
+function gradleProjectDir(args: readonly string[]): string {
+  let dir = ''
+  for (const [index, token] of args.entries()) {
+    if (token === '--') {
+      return dir
+    }
+    for (const flag of GRADLE_PROJECT_DIR_FLAGS) {
+      const value = flagValue(token, flag, args, index)
+      if (value !== null) {
+        dir = value
+      }
+    }
+  }
+  return dir
+}
+
+/** `JAVA_HOME`'s java, or a refusal that names what to set — never PATH java. */
+function gradleJavaExe(javaHome: string | null): string {
+  if (javaHome === null || javaHome === '') {
+    throw new ToolFailure(
+      'JAVA_HOME is not set — the bridge runs the Gradle wrapper with ' +
+        'JAVA_HOME\\bin\\java.exe and does not fall back to PATH java, ' +
+        'because a React Native toolchain is strict about its JDK',
+    )
+  }
+  // JAVA_HOME may arrive quoted; a value with a stray `"` fails the isFile
+  // check below with a path the caller can read, so only quotes are stripped.
+  const exe = join(javaHome.replaceAll('"', ''), 'bin', 'java.exe')
+  if (!isFile(exe)) {
+    throw new ToolFailure(
+      `JAVA_HOME does not point at a JDK: ${exe} is missing — point it at ` +
+        'the JDK this project builds with (a strict toolchain, e.g. React ' +
+        "Native 0.87, wants JDK 17 even when Gradle itself runs on a newer one)",
+    )
+  }
+  return exe
 }
 
 /**

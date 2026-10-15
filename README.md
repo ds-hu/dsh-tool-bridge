@@ -120,10 +120,28 @@ a patch override in the profile — and a patch replaces the targeted row's whol
 ## Using it
 
 `bridge_run` is the front door. The accepted names are `flutter`, `dart`, `git`,
-`pnpm`, `npm`, `npx`, and the project's own `vite`/`vitest`/`svelte-check`/
-`svelte-kit`/`tsc`, resolved out of the job's working directory by reading the
-package's `bin` field — never through a `.cmd` wrapper, which would put
-`cmd.exe` in the middle of an argv that is supposed to have no shell.
+`pnpm`, `npm`, `npx`, `gradlew`, and the project's own `vite`/`vitest`/
+`svelte-check`/`svelte-kit`/`tsc`, resolved out of the job's working directory —
+the Node tools by reading the package's `bin` field, and `gradlew` through its
+`gradle/wrapper/gradle-wrapper.jar` — never through a `.cmd`/`.bat` wrapper,
+which would put `cmd.exe` in the middle of an argv that is supposed to have no
+shell.
+
+**Gradle builds go through the wrapper jar.** `gradlew` runs as
+`java -classpath <project>/gradle/wrapper/gradle-wrapper.jar
+org.gradle.wrapper.GradleWrapperMain` (the classpath form rather than `-jar`,
+which needs a `Main-Class` attribute not every committed wrapper jar carries),
+with `--no-daemon` forced (a settled job leaves no resident JVM behind) and the
+JVM taken from `JAVA_HOME` only — never from PATH, because React Native's
+toolchain is strict about its JDK. The wrapper resolves in the working directory
+or in a relative `-p <dir>` inside it, which is what lets a session at the RN
+repo root build with `gradlew -p android :app:assembleDebug`; a directory
+without the wrapper jar is refused by name. Refused are the flags that redirect
+an anchor or open execution — `-g`/`--gradle-user-home`, `--project-cache-dir`,
+`-I`/`--init-script`, `-c`/`--settings-file`, `-b`/`--build-file`, every `-D`,
+`--daemon`, `-t`/`--continuous`, `--stop`/`--status` — plus `-P`/`--project-prop`
+keys under `org.gradle.`, while project properties like
+`-PreactNativeArchitectures=x86_64` pass through.
 
 **Refusals are deliberate, and they are the only bound left** (ADR-0001). `dart`
 takes any subcommand, so `dart run <file>.dart` executes arbitrary code with this
@@ -211,6 +229,8 @@ and turn off.
   port states the platform instead of carrying an untested claim.
 - **Node 22+** for the plugin, and `node` on `PATH` for a script binary.
 - `flutter`/`dart`, `git`, and whichever package manager your project names.
+- `JAVA_HOME` pointing at a JDK when you run `gradlew` — the wrapper's JVM comes
+  from there and never from `PATH`.
 - A harness whose `@deepseek-ai/*` line matches the peers in `package.json`
   (currently `0.2.0-rc.2`). They are pinned on purpose: the plugin builds against
   the types of one harness line.

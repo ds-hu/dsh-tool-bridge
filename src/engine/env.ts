@@ -18,9 +18,19 @@
  * inside a program is still handled there, at every read.
  */
 
-/** Environment overrides applied to every tool this plugin spawns. */
+/**
+ * Environment overrides applied to every tool this plugin spawns.
+ *
+ * `GIT_TERMINAL_PROMPT=0` is the one that is not about colour. A job's stdin is
+ * `ignore` (`host/runner.ts`), so a git command that wants a credential can
+ * never get one — but *silence* is the wrong answer from a network verb: the
+ * caller should read git's own "could not read Username / terminal prompts
+ * disabled" instead of watching a job that looks busy. The spawn already makes
+ * the prompt impossible; this makes the failure say so.
+ */
 export const TOOL_ENV_OVERRIDES: NodeJS.ProcessEnv = {
   NO_COLOR: '1',
   PAGER: 'cat',
   GIT_PAGER: 'cat',
+  GIT_TERMINAL_PROMPT: '0',
 }

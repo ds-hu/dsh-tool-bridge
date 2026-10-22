@@ -16,26 +16,31 @@
  *   is kept only for a caller that reaches the function directly.
  */
 
-import { commandName, flagValue } from './argv'
+import { blockedFlag, commandName, flagValue, selectorAt, splitManagerGlobals } from './argv'
+import type { ManagerSelector } from './argv'
 import { refuse } from './errors'
 import {
   ALLOWED_EXES,
   EXEC_BLOCKED_FLAGS,
   GIT_ALLOWED_FLAGS,
   GIT_BLOCKED_FLAGS,
+  GIT_FLAG_REASONS,
+  GIT_PUSH_ALLOWED_FLAGS,
   GIT_VERBS,
   GRADLE_BLOCKED_FLAGS,
   GRADLE_FLAG_REASONS,
   GRADLE_PROJECT_DIR_FLAGS,
   GRADLE_PROPERTY_FLAGS,
   GRADLE_RESERVED_PROPERTY_PREFIX,
+  MANAGER_VALUE_FLAGS,
   MESSAGE_SOURCE_FLAGS,
   NPM_RUN_SHORTHANDS,
   PACKAGE_MANAGER_BLOCKED_FLAGS,
   PACKAGE_MANAGER_GLOBAL_LOCATIONS,
   PACKAGE_MANAGER_LOCATION_FLAG,
-  PACKAGE_MANAGERS,
   PACKAGE_MANAGER_VERBS,
+  PACKAGE_MANAGER_WHOLE_WORKSPACE_FLAGS,
+  PACKAGE_MANAGERS,
   PATHSPEC_WILDCARDS,
   SCRIPT_BINARIES,
 } from './surface'
@@ -138,7 +143,9 @@ export function validateGit(args: readonly string[]): void {
   }
   if (verb.startsWith('-')) {
     // `git --version` and friends carry no repository risk, but keep the
-    // surface honest: only the documented verbs.
+    // surface honest: only the documented verbs. It is also what keeps
+    // `git -c core.sshCommand=… push` out — a config injection is an argv
+    // *before* the verb, not a flag of one.
     refuse(403, `git verb not allowed: ${repr(verb)}`)
   }
   if (!GIT_VERBS.has(verb)) {
@@ -150,17 +157,162 @@ export function validateGit(args: readonly string[]): void {
     validateRestore(body, allowed)
     return
   }
-  const blocked = GIT_BLOCKED_FLAGS[verb] ?? new Set<string>()
-  for (const arg of body) {
-    if (blocked.has(arg)) {
-      refuse(403, `git ${verb} flag not allowed: ${repr(arg)}`)
-    }
+  if (verb === 'push') {
+    validatePush(body)
+    return
   }
+  validateGitDenyList(verb, body)
   if (verb === 'commit' && !hasMessageSource(body)) {
     refuse(
       403,
       "git commit needs a message: pass the inline 'message' field to " +
         '/run, or one of -m/--message/-F/--file/-C/--reuse-message',
+    )
+  }
+}
+
+/**
+ * The deny-list guard behind the verbs that keep git's own flag surface.
+ *
+ * Stops at the `--` that ends the flag region: everything after it belongs to
+ * git's positional grammar (pathspecs for `add`/`commit`, commits for
+ * `cherry-pick`), where a token spelled like a flag means something else.
+ */
+export function validateGitDenyList(verb: string, body: readonly string[]): void {
+  const blocked = GIT_BLOCKED_FLAGS[verb] ?? new Set<string>()
+  for (const token of body) {
+    if (token === '--') {
+      return
+    }
+    if (!token.startsWith('-')) {
+      continue
+    }
+    const hit = blockedFlag(token, blocked)
+    if (hit !== null) {
+      refuse(403, gitFlagRefusal(verb, hit))
+    }
+  }
+}
+
+/**
+ * `git push`: one named remote, one named destination per refspec, nothing else.
+ *
+ * An **allow list** on the flags, the way `restore` has one, because a deny list
+ * cannot say "this surface is complete" — and of every verb here, push is the
+ * one whose effect outlives the machine it ran on. The refspec rules are
+ * `restore`'s Pathspec guard one level over, on refs instead of paths:
+ * `+feature` is a force push by another spelling, `:feature` deletes a remote
+ * ref, and a wildcard publishes branches the caller never named.
+ */
+export function validatePush(body: readonly string[]): void {
+  const positionals: string[] = []
+  let afterSeparator = false
+  for (const token of body) {
+    if (afterSeparator) {
+      positionals.push(token)
+      continue
+    }
+    if (token === '--') {
+      afterSeparator = true
+      continue
+    }
+    if (!token.startsWith('-')) {
+      positionals.push(token)
+      continue
+    }
+    const hit = blockedFlag(token, GIT_BLOCKED_FLAGS['push'] ?? new Set<string>())
+    if (hit !== null) {
+      refuse(403, gitFlagRefusal('push', hit))
+    }
+    const equals = token.indexOf('=')
+    const head = equals >= 0 ? token.slice(0, equals) : token
+    if (!GIT_PUSH_ALLOWED_FLAGS.has(head)) {
+      refuse(403, pushFlagRefusal(head))
+    }
+  }
+  const remote = positionals[0]
+  if (remote === undefined) {
+    refuse(
+      403,
+      'git push needs a remote and a destination ref, e.g. git push origin ' +
+        'feature-branch — a bare push publishes whatever the upstream config ' +
+        'happens to say, so this surface never runs one',
+    )
+  }
+  guardPushRemote(remote)
+  const refspecs = positionals.slice(1)
+  if (refspecs.length === 0) {
+    refuse(
+      403,
+      `git push needs a destination ref, e.g. git push ${repr(remote)} ` +
+        'feature-branch (or HEAD:refs/heads/feature-branch) — the ref ' +
+        'published has to be named, not taken from the upstream config',
+    )
+  }
+  for (const spec of refspecs) {
+    guardPushRefspec(spec)
+  }
+}
+
+/** Why a push flag is refused: the surface is complete, and this is it. */
+export function pushFlagRefusal(flag: string): string {
+  return (
+    `git push flag not allowed: ${repr(flag)} (allowed: ${sortedList(GIT_PUSH_ALLOWED_FLAGS)}) ` +
+    '— this surface publishes one named branch to one named remote and ' +
+    'rewrites nothing already there'
+  )
+}
+
+/**
+ * A push's remote has to be a *remote*: a name git resolves through its config,
+ * or a URL.
+ *
+ * A filesystem path is a remote git accepts — `git push ../other main` writes
+ * into a repository the pinned working directory does not contain — so the same
+ * reasoning that refuses `--prefix` refuses a path here.
+ */
+export function guardPushRemote(remote: string): void {
+  const localPath =
+    remote.startsWith('.') ||
+    remote.startsWith('/') ||
+    remote.startsWith('\\') ||
+    remote.includes('\\') ||
+    /^[A-Za-z]:/u.test(remote)
+  if (localPath || /^file:/iu.test(remote)) {
+    refuse(
+      403,
+      `git push remote must be a named remote or a URL, not a local path: ` +
+        `${repr(remote)} — a path remote writes into a repository the pinned ` +
+        'working directory does not contain',
+    )
+  }
+}
+
+/** The refspec rules: publish one ref, permanently, without forcing or deleting. */
+export function guardPushRefspec(spec: string): void {
+  if (!spec) {
+    refuse(403, 'git push refspec must not be empty')
+  }
+  if (spec.startsWith('+')) {
+    refuse(
+      403,
+      `git push refspec must not force: ${repr(spec)} — a '+' refspec is a ` +
+        'force push by another spelling, and a force push rewrites a remote ' +
+        'anyone may already have fetched',
+    )
+  }
+  if (spec.startsWith(':')) {
+    refuse(
+      403,
+      `git push refspec must name a ref to publish, not delete: ${repr(spec)} ` +
+        '— a leading colon deletes a remote ref',
+    )
+  }
+  if (spec.includes('*')) {
+    refuse(
+      403,
+      `git push refspec must name one ref, not a pattern: ${repr(spec)} — a ` +
+        'wildcard publishes branches the caller never named',
     )
   }
 }
@@ -173,15 +325,20 @@ export function validateGit(args: readonly string[]): void {
  * the same `run <script>` argv every other script gets. `test` and `start` are
  * the only two names npm itself abbreviates — `npm build` is not a thing — so
  * nothing else is accepted as one.
+ *
+ * The shorthand is found through the same split the rest of validation uses, so
+ * `npm -w app test` is normalised with its selector still in front of it rather
+ * than being read as the verb `-w`.
  */
 export function shorthandToRun(argv: string[]): void {
   const head = argv[0]
   if (argv.length < 2 || head === undefined || commandName(head) !== 'npm') {
     return
   }
-  const shorthand = argv[1]
+  const { rest } = splitManagerGlobals('npm', argv.slice(1))
+  const shorthand = argv[argv.length - rest.length]
   if (shorthand !== undefined && NPM_RUN_SHORTHANDS.has(shorthand)) {
-    argv.splice(1, 0, 'run')
+    argv.splice(argv.length - rest.length, 0, 'run')
   }
 }
 
@@ -211,39 +368,40 @@ export function ensureNoDaemon(argv: string[]): void {
 }
 
 /**
- * The blocked flag a token sets, if any.
- *
- * Handles the three shapes a flag travels in: `--dir x`, `--dir=x` and a short
- * one attached to its value (`-Cx`), which is why a short blocked flag is
- * matched as a prefix rather than by equality.
+ * The blocked flag a token sets, if any — re-exported from `./argv`, which is
+ * where the read lives (the workspace-selector split needs it too).
  */
-export function blockedFlag(token: string, blocked: ReadonlySet<string>): string | null {
-  const equals = token.indexOf('=')
-  const head = equals >= 0 ? token.slice(0, equals) : token
-  if (blocked.has(head)) {
-    return head
-  }
-  for (const short of blocked) {
-    if (
-      short.startsWith('-') &&
-      !short.startsWith('--') &&
-      token.startsWith(short) &&
-      token.length > short.length
-    ) {
-      return short
-    }
-  }
-  return null
-}
+export { blockedFlag }
 
 /** Why a retargeting flag is refused, and what the caller meant by it. */
 export function flagRefusal(manager: string, flag: string): string {
   const where = manager === 'pnpm' ? 'the pinned working directory' : 'the pinned cwd'
+  const scope = PACKAGE_MANAGER_WHOLE_WORKSPACE_FLAGS.has(flag)
+    ? 'every workspace member at once, which is one invocation writing into all of them'
+    : "a different directory, the workspace root, or the machine's global prefix"
   return (
     `${manager} flag not allowed: ${repr(flag)} — it would run outside ${where} ` +
-    '(as a different directory, a workspace root, a workspace package, or the ' +
-    "machine's global prefix); the bridge pins one cwd per session and no " +
-    'request can retarget it'
+    `(${scope}); the bridge pins one cwd per session and no request can ` +
+    'retarget it'
+  )
+}
+
+/** Why a workspace selector is refused: only a directory selector can escape. */
+export function selectorRefusal(manager: string, flag: string): string {
+  return (
+    `${manager} ${repr(flag)} needs a workspace selector value, e.g. ` +
+    `${manager} ${flag} web run build — a selector with nothing after it ` +
+    'names no member at all'
+  )
+}
+
+/** Why a `!`-selector is refused: it means "every member except …". */
+export function exclusionRefusal(manager: string, value: string): string {
+  return (
+    `${manager} selector not allowed: ${repr(value)} — a '!' selector means ` +
+    'every member except the ones named, which is the whole-workspace run ' +
+    '--workspaces is refused for (one invocation writing into all of them); ' +
+    'name the members instead'
   )
 }
 
@@ -274,18 +432,87 @@ export function locationValue(token: string): string | null {
 }
 
 /**
+ * Whether a selector value names a *directory* rather than a package pattern.
+ *
+ * pnpm's grammar (its own bundled help) is four shapes: a package pattern
+ * (`foo`, `@bar/*`, `...foo`), a directory (`./components`, `.`, `{packages}`),
+ * a "changed since" clause (`[origin/main]`), and an exclusion (`!foo`). Only
+ * the directory shape can leave the tree, so only it is judged by the literal
+ * path rules; a scoped name's `/` and a `[since]` clause's `/` are grammar, not
+ * separators.
+ */
+export function isDirectorySelector(value: string): boolean {
+  if (value === '.') {
+    return true
+  }
+  // pnpm's graph operators (`...foo`, `...^foo`, `"...@bar/*"`): a *name*
+  // pattern with dependents attached, not a directory. `..` is still a directory.
+  if (value.startsWith('...')) {
+    return false
+  }
+  if (value.startsWith('@') || value.startsWith('[') || value.startsWith('{')) {
+    return false
+  }
+  return (
+    value.startsWith('.') ||
+    value.startsWith('/') ||
+    value.startsWith('\\') ||
+    value.includes('/') ||
+    value.includes('\\') ||
+    /^[A-Za-z]:/u.test(value)
+  )
+}
+
+/**
+ * Guards one workspace selector, wherever it appeared.
+ *
+ * A selector is not a retarget (the manager still launches in the pinned cwd),
+ * but a *directory* selector can still point out of the tree, so it goes through
+ * the same `guardLiteralPath` the restore pathspecs and `gradlew -p` use. A
+ * package pattern is the workspace's own topology and is left to resolve; a `!`
+ * exclusion is refused because it selects everything else.
+ */
+export function guardSelectorValue(manager: string, selector: ManagerSelector): void {
+  const value = selector.value
+  if (value === null || value === '') {
+    refuse(403, selectorRefusal(manager, selector.flag))
+  }
+  // pnpm's `.` is "every package under the current directory" — anchored at the
+  // pinned cwd itself, which is the one directory that needs no path guard.
+  if (value === '.') {
+    return
+  }
+  if (value.startsWith('!')) {
+    refuse(403, exclusionRefusal(manager, value))
+  }
+  // pnpm's `{<dir>}[<since>]`: the directory is guarded, the clause is grammar.
+  const brace = value.startsWith('{') ? value.indexOf('}') : -1
+  if (brace > 0) {
+    guardLiteralPath(value.slice(1, brace), `the ${manager} workspace selector`, 'a directory')
+    return
+  }
+  if (isDirectorySelector(value)) {
+    guardLiteralPath(value, `the ${manager} workspace selector`, 'a directory')
+  }
+}
+
+/**
  * Refuses a retargeting flag anywhere in a remaining-argv list.
  *
  * Stops at the `--` that ends the manager's own surface: everything after it
  * belongs to the script or binary being run, where a token spelled like a
  * manager flag means something else entirely.
+ *
+ * A workspace selector is *guarded* here rather than refused, in either flag
+ * position — after the verb is where the old surface leaked, because nothing
+ * looked at `--filter` at all.
  */
 export function checkRetargeting(
   manager: string,
   tokens: readonly string[],
   extra: ReadonlySet<string>,
 ): void {
-  const blocked = new Set([...PACKAGE_MANAGER_BLOCKED_FLAGS, ...extra])
+  const blocked = new Set([...(PACKAGE_MANAGER_BLOCKED_FLAGS[manager] ?? new Set<string>()), ...extra])
   for (const [index, token] of tokens.entries()) {
     if (token === '--') {
       return
@@ -296,6 +523,11 @@ export function checkRetargeting(
     const hit = blockedFlag(token, blocked)
     if (hit !== null) {
       refuse(403, flagRefusal(manager, hit))
+    }
+    const selector = selectorAt(manager, tokens, index)
+    if (selector !== null) {
+      guardSelectorValue(manager, selector)
+      continue
     }
     const value = locationValue(token)
     if (value === null) {
@@ -319,13 +551,24 @@ export function checkRetargeting(
  * subcommand) because the interesting question for a package manager is what it
  * is allowed to touch, and the answer differs per verb — and, for `ls`, per
  * manager.
+ *
+ * Both managers accept their **Workspace selector** before the verb as well as
+ * after it, so the selectors are lifted first (`splitManagerGlobals`) and
+ * guarded once; the verb is then read from what is left, which is also what
+ * keeps npm's `-ws`/`-w` collision resolvable (blocked spellings stop the split
+ * and meet their own refusal).
  */
 export function validatePackageManager(manager: string, args: readonly string[]): void {
-  const verb = args[0]
+  const { selectors, rest } = splitManagerGlobals(manager, args)
+  for (const selector of selectors) {
+    guardSelectorValue(manager, selector)
+  }
+  const verb = rest[0]
   if (verb === undefined) {
     refuse(403, `${manager} needs a verb`)
   }
-  const hit = blockedFlag(verb, PACKAGE_MANAGER_BLOCKED_FLAGS)
+  const blocked = PACKAGE_MANAGER_BLOCKED_FLAGS[manager] ?? new Set<string>()
+  const hit = blockedFlag(verb, blocked)
   if (hit !== null) {
     refuse(403, flagRefusal(manager, hit))
   }
@@ -339,10 +582,10 @@ export function validatePackageManager(manager: string, args: readonly string[])
     refuse(403, `${manager} verb not allowed: ${repr(verb)} (allowed: ${sortedList(verbs)})`)
   }
   if (verb === 'exec') {
-    validateExec(manager, args.slice(1))
+    validateExec(manager, rest.slice(1))
     return
   }
-  checkRetargeting(manager, args.slice(1), new Set())
+  checkRetargeting(manager, rest.slice(1), new Set())
 }
 
 /**
@@ -366,17 +609,29 @@ export function validateNpx(args: readonly string[]): void {
  */
 export function validateExec(manager: string, args: readonly string[]): void {
   let target: string | null = null
-  for (const token of args) {
+  let targetIndex = args.length
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index] as string
     if (token === '--') {
       continue
     }
     if (token.startsWith('-')) {
-      checkRetargeting(manager, [token], EXEC_BLOCKED_FLAGS)
+      // A flag's value is not the target: `npm exec -w app vitest` runs vitest.
+      const equals = token.indexOf('=')
+      const head = equals >= 0 ? token.slice(0, equals) : token
+      if (token === head && MANAGER_VALUE_FLAGS.has(head)) {
+        index += 1
+      }
       continue
     }
     target = token
+    targetIndex = index
     break
   }
+  // The flag region is scanned in one pass, with the whole argv, so a selector's
+  // value is readable: `npm exec -w app vitest` selects `app`, and a per-token
+  // scan would see `-w` with nothing after it.
+  checkRetargeting(manager, args.slice(0, targetIndex), EXEC_BLOCKED_FLAGS)
   if (target === null) {
     refuse(403, `${manager} needs a script binary to run, e.g. ${manager} vitest run`)
   }
@@ -394,13 +649,21 @@ export function validateExec(manager: string, args: readonly string[]): void {
   }
 }
 
-/** The refusal for an unknown git verb, with the substitute when there is one. */
+/** Why a refused git verb is refused, with the substitute when there is one. */
 export function verbRefusal(verb: string): string {
   let message = `git verb not allowed: ${repr(verb)} (allowed: ${sortedList(GIT_VERBS)})`
   if (verb === 'checkout' || verb === 'switch') {
     message += " — to discard worktree changes to named paths, use 'git restore -- <path>'"
   }
   return message
+}
+
+/** Why a refused git flag is refused; the reasons live beside the table. */
+export function gitFlagRefusal(verb: string, flag: string): string {
+  const reason = GIT_FLAG_REASONS[verb]?.[flag]
+  return reason === undefined
+    ? `git ${verb} flag not allowed: ${repr(flag)}`
+    : `git ${verb} flag not allowed: ${repr(flag)} — ${reason}`
 }
 
 /** Why a refused Gradle flag is refused; the reasons live beside the table. */

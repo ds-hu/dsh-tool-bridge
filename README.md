@@ -143,15 +143,44 @@ an anchor or open execution — `-g`/`--gradle-user-home`, `--project-cache-dir`
 keys under `org.gradle.`, while project properties like
 `-PreactNativeArchitectures=x86_64` pass through.
 
+**Workspace scripts run on either side of the verb.** `pnpm --filter <pkg> run
+test` and `npm -w <pkg> run build` are accepted, because a selector picks a
+member of the workspace the pinned cwd already belongs to rather than moving the
+job: the manager still starts in the session's directory, so the lane and its
+serialization are unchanged. A selector that names a *directory* is guarded by
+the same literal-path rules as the restore pathspecs (`./packages/web` yes,
+`../..` no, `.` because it is anchored at the cwd itself), the whole-workspace
+spellings — `--workspaces`, `-ws`, `--include-workspace-root`, and pnpm's
+`-w`/`--workspace`, which is `--workspace-root` there — are refused, and so is a
+`!` exclusion, because it means every member except the one named. What it costs
+is in [ADR-0002](docs/adr/0002-cwd-is-pinned-no-per-job-worktrees.md): a package
+*name* is resolved by the workspace, so it may land in a member the pinned cwd
+does not contain.
+
+**Git writes name what they touch.** `fetch`, `rebase`, `cherry-pick` and a
+narrowed `git push` are accepted, because a fork kept in step with upstream needs
+all three in one loop and `fetch` is what makes a rebase mean anything. A push
+must carry a named remote **and** a named destination ref —
+`git push origin feature`, `git push origin HEAD:refs/heads/feature` — so a bare
+`git push` (which takes its destination from the upstream config), `--force`,
+`--delete`, `--mirror`, `--all`/`--tags`, a `+refspec`, a `:refspec`, a wildcard
+refspec and a path/`file:` remote are all refused. A rebase or cherry-pick is
+refused when it would *block*: a job has no terminal, so `-i`/`--autosquash`,
+`-e`/`--edit` and `-x`/`--exec` are out, while `--abort`/`--continue`/`--skip`
+are in, or a conflict would have no way out. `merge` and `pull` stay out — a
+`pull` hides whether it merged or rebased ([ADR-0014](docs/adr/0014-the-git-surface-carries-fetch-rebase-cherry-pick-and-a-named-push.md)).
+
 **Refusals are deliberate, and they are the only bound left** (ADR-0001). `dart`
 takes any subcommand, so `dart run <file>.dart` executes arbitrary code with this
 plugin's access; what the narrow surface buys is *recovery cost and surprise* for
-a fallible caller. Refused on that reasoning: `git push`, `reset --hard`,
-rebase, `clean`, `stash`, `checkout`/`switch`, `git restore .` (a pathspec guard:
-literal, relative, non-wildcard paths only), the cwd-retargeting flags on either
-package manager, and an exec form (`pnpm exec`, `npm exec`, `npx`) whose target
-is not one of the project's own script binaries — measured, they also run
-anything on `PATH`, and `npx` fetches what it cannot find.
+a fallible caller. Refused on that reasoning: history that cannot be got back
+(`reset --hard`, `clean`, `stash`, `checkout`/`switch`), a push that would rewrite
+or delete a remote ref, an interactive rebase or an `--edit` cherry-pick, `git
+restore .` (a pathspec guard: literal, relative, non-wildcard paths only), the
+cwd-retargeting flags and the whole-workspace spellings on either package
+manager, and an exec form (`pnpm exec`, `npm exec`, `npx`) whose target is not
+one of the project's own script binaries — measured, they also run anything on
+`PATH`, and `npx` fetches what it cannot find.
 
 **Long jobs get their own lane.** A command that runs until killed — `vite dev`,
 `vitest` in watch mode, a `dev`/`start`/`serve`/`watch`/`storybook` script, or
@@ -216,11 +245,17 @@ install it into a profile (ADR-0001, amended). That is a real trade: the refusal
 list described above is the only bound on what a conversation can do, and it
 bounds surprise and recovery cost rather than privilege.
 
-What is unchanged: `git push` is absent (a GitHub token must never live in a
-long-running process), history rewriting is absent, whole-worktree wipes are
-absent, and the callers are your own agent sessions on your own machine.
-Everything the plugin does per conversation is in the switch the human can see
-and turn off.
+What is unchanged: there is no privilege boundary here to lose, and no force
+push, remote ref deletion, `reset --hard`, `clean`, `stash` or whole-worktree
+wipe is reachable. What changed with ADR-0014 is the *unnamed* push: `git push
+origin feature` is accepted, and it authenticates through the machine's own git
+credential store — the plugin stores no token, reads none, and a job's stdin is
+`ignore` with `GIT_TERMINAL_PROMPT=0`, so a push that needs an answer fails with
+git's own message instead of hanging. The old sentence ("a GitHub token must
+never live in a long-running process") was never true of a plugin that *is* the
+harness process; what the refusal bought was one approval click per push. The
+callers are your own agent sessions on your own machine, and everything the
+plugin does per conversation is in the switch the human can see and turn off.
 
 ## Requirements
 
@@ -267,10 +302,12 @@ Two sandbox facts shape the loop, both measured:
   working directory, guardrail, digest, format pin, uncommitted scope, sight —
   plus the terms this refactor retired and why.
 - `docs/adr/` — the decisions: the allowlist is a guardrail (0001, amended for the
-  trust decision); the working directory is fixed (0002); a sub-tool is a job
-  (0003, amended); the Node surface and the long lane (0004); the browser belongs
-  to Playwright MCP, now mounted per conversation (0005, amended); npm is a
-  package manager on the same terms (0006); **the plugin is the bridge** (0007).
+  trust decision); the working directory is pinned (0002, amended for the
+  workspace selector); a sub-tool is a job (0003, amended); the Node surface and
+  the long lane (0004); the browser belongs to Playwright MCP, now mounted per
+  conversation (0005, amended); npm is a package manager on the same terms
+  (0006); **the plugin is the bridge** (0007); **the git surface carries fetch,
+  rebase, cherry-pick and a named push** (0014).
 - `docs/vite-vitest-sandbox-findings.md` — the measurements behind the Node
   surface: which commands the sandbox kills, with what error, and why.
 - `src/engine/` — the pure logic and the reason each refusal exists.
@@ -280,16 +317,18 @@ Two sandbox facts shape the loop, both measured:
 
 ## Deliberately absent
 
-`git push`; git history rewriting (`reset --hard`, `rebase`); whole-worktree
-wipes (`clean`, `git restore .`); `stash`; `checkout`/`switch`; a per-request
-`cwd` (the working directory is the session's, ADR-0002) and per-request
-worktrees; the unnarrowed package-manager forms (`pnpm dlx`,
-`npm link`/`unlink`/`publish`/`config`/`store`) and an exec-form target that is
-not a project script binary; guessing a project's package manager from its
-lockfile (the lockfile is advisory, the caller names the manager); any raw `node`
-or `python` executable name (the guardrail is a list of names, ADR-0001); a
-per-request formatter override (the pin is configuration); UI driving inside the
-plugin — the browser is Playwright MCP's, mounted per conversation (ADR-0005).
+A force push or a remote ref deletion; `merge`/`pull`; git history that cannot be
+got back (`reset --hard`, `clean`); whole-worktree wipes (`git restore .`);
+`stash`; `checkout`/`switch`; a per-request `cwd` (the working directory is the
+session's, ADR-0002) and per-request worktrees; the whole-workspace runs
+(`--workspaces`, `-ws`, `--include-workspace-root`, pnpm's `-w`) and the
+unnarrowed package-manager forms (`pnpm dlx`, `npm link`/`unlink`/`publish`/
+`config`/`store`) and an exec-form target that is not a project script binary;
+guessing a project's package manager from its lockfile (the lockfile is advisory,
+the caller names the manager); any raw `node` or `python` executable name (the
+guardrail is a list of names, ADR-0001); a per-request formatter override (the
+pin is configuration); UI driving inside the plugin — the browser is Playwright
+MCP's, mounted per conversation (ADR-0005).
 
 ## Licence
 

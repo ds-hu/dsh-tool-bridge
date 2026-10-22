@@ -109,16 +109,64 @@ export const PACKAGE_MANAGER_VERBS: Record<string, Set<string>> = {
 /**
  * Flags that retarget one of the two anchors a job runs under: the working
  * directory (ADR-0002) and "this project, not this machine". `-C`/`--dir`/
- * `--prefix` move the directory, `-w`/`--workspace-root`/`--workspace` move it
- * up to a workspace root or sideways to a package that may lie outside it, and
- * `-g`/`--global` leaves the project entirely.
+ * `--prefix` move the directory, `--workspace-root` moves it up to the root of
+ * the workspace, and `-g`/`--global` leaves the project entirely.
  *
- * One table serves both managers on purpose, and the two spellings of `-w` are
- * why: pnpm's `-w` is `--workspace-root`, npm's is `--workspace <name>` (which
- * is pnpm's `--workspace`). One flag, three retargets, one refusal.
+ * **Per manager, because one spelling is two flags.** pnpm's `-w` and
+ * `--workspace` are `--workspace-root` (a retarget, refused); npm's `-w` and
+ * `--workspace` pick *one member* of the workspace (a **Workspace selector**,
+ * accepted — see `PACKAGE_MANAGER_SELECTOR_FLAGS`). The `-w` collision is why
+ * this is a record and not one set: the same token cannot be both.
+ *
+ * The "all members at once" spellings are refused with the retarget table
+ * because they are the same failure one level out: one invocation that writes
+ * into every package multiplies the writes and defeats the one-target-per-lane
+ * assumption, which is what the long lane exists to keep.
  */
-export const PACKAGE_MANAGER_BLOCKED_FLAGS = new Set([
-  '-C', '--dir', '--prefix', '-w', '--workspace-root', '--workspace', '-g', '--global',
+const PACKAGE_MANAGER_RETARGET_FLAGS = [
+  '-C', '--dir', '--prefix', '--workspace-root', '-g', '--global',
+]
+
+export const PACKAGE_MANAGER_BLOCKED_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
+  pnpm: new Set([...PACKAGE_MANAGER_RETARGET_FLAGS, '-w', '--workspace']),
+  npm: new Set([...PACKAGE_MANAGER_RETARGET_FLAGS, '--workspaces', '-ws', '--include-workspace-root']),
+}
+
+/**
+ * The refused spellings that widen one invocation to the whole workspace, so the
+ * refusal can say *that* instead of "a different directory": the difference
+ * matters to a caller who meant "all my packages".
+ */
+export const PACKAGE_MANAGER_WHOLE_WORKSPACE_FLAGS: ReadonlySet<string> = new Set([
+  '--workspaces', '-ws', '--include-workspace-root', '--workspace-root', '--workspace',
+])
+
+/**
+ * The flags that pick *which* workspace member a command runs in: pnpm's
+ * `--filter`/`-F` (its bundled help gives it the short alias) and npm's
+ * `-w`/`--workspace`.
+ *
+ * A selector is not a retarget, and the difference is where the process starts:
+ * the manager still launches in the pinned working directory, so the lane key
+ * is unchanged. What the selector moves is the *script's* directory, to a member
+ * of the workspace the pinned cwd already belongs to — the same terms `gradlew
+ * -p android` is accepted on (ADR-0002, amended). A selector that names a
+ * *directory* is therefore guarded by the literal-path rules; a selector that
+ * names a package is the workspace's own grammar (`foo`, `@bar/*`, `...foo`).
+ */
+export const PACKAGE_MANAGER_SELECTOR_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
+  npm: new Set(['-w', '--workspace']),
+  pnpm: new Set(['--filter', '-F']),
+}
+
+/**
+ * Flags whose value is the *next* token, so a script name can be read past a
+ * flag that precedes it. `pnpm run --filter web dev` runs `dev`, and reading
+ * `web` as the script is what put a dev server on the queue lane and starved
+ * every build behind it.
+ */
+export const MANAGER_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  '--filter', '-F', '-w', '--workspace', '--location',
 ])
 
 /** The one blocked flag whose *value* decides: `=global`/`=user` vs `=project`. */
@@ -201,17 +249,108 @@ export const LANE_LONG = 'long'
 export const LONG_SCRIPTS = new Set(['dev', 'start', 'serve', 'watch', 'storybook'])
 
 /** git verbs this tool will run; everything else is refused by omission. */
-export const GIT_VERBS = new Set(['status', 'diff', 'log', 'add', 'commit', 'branch', 'restore'])
+export const GIT_VERBS = new Set([
+  'status', 'diff', 'log', 'add', 'commit', 'branch', 'restore',
+  'fetch', 'rebase', 'cherry-pick', 'push',
+])
 
-/** Per-verb flags that turn a safe verb destructive. */
-export const GIT_BLOCKED_FLAGS: Record<string, Set<string>> = {
+/**
+ * Why a refused git flag is refused, per verb, because one spelling is several
+ * flags: `-x` is rebase's `--exec` and cherry-pick's "record the source", `-f`
+ * is fetch's overwrite and push's force, `-e` is cherry-pick's editor. A flat
+ * table cannot say which, and the refusal *is* the model's feedback.
+ *
+ * Three families live here, and they are refused for three different reasons:
+ *
+ * - **It would block.** A job has no terminal, so an interactive rebase, an
+ *   `--edit` cherry-pick or `--autosquash` (which implies `--interactive`) does
+ *   not fail — it waits for an editor that will never answer, holding the Queue
+ *   lane until somebody kills it. That is the same failure the long lane exists
+ *   to prevent, so it is refused by name rather than discovered.
+ * - **It runs something.** `--exec` after every rebased commit and
+ *   `--upload-pack`/`--receive-pack` on the other side of a connection are
+ *   general execution behind an allowlisted verb — the reason `gradlew -I` and
+ *   the exec forms are narrowed.
+ * - **It writes a ref the caller did not name.** `--update-refs` moves branch
+ *   refs beside the one being rebased; fetch's `--tags`/`--force` and push's
+ *   `--all`/`--branches`/`--tags`/`--mirror` publish or overwrite refs nobody
+ *   named; `--delete` removes one.
+ */
+export const GIT_FLAG_REASONS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  fetch: {
+    '-f': 'fetch already forces remote-tracking refs; the flag only adds local ones — a tag or a branch it overwrites, which the fetch did not originate',
+    '--force': 'fetch already forces remote-tracking refs; the flag only adds local ones — a tag or a branch it overwrites, which the fetch did not originate',
+    '-t': 'it writes every remote tag into the clone — refs the caller never named',
+    '--tags': 'it writes every remote tag into the clone — refs the caller never named',
+    '--upload-pack': 'it runs an arbitrary program on the other side of the connection — general execution behind an allowlisted verb',
+    '--receive-pack': 'it runs an arbitrary program on the other side of the connection — general execution behind an allowlisted verb',
+    '--recurse-submodules': 'it writes inside submodules the caller never named',
+  },
+  rebase: {
+    '-i': 'it opens an editor a job has no terminal for, so the run would block holding the Queue until somebody killed it',
+    '--interactive': 'it opens an editor a job has no terminal for, so the run would block holding the Queue until somebody killed it',
+    '--autosquash': 'it implies --interactive, so it would block waiting for an editor a job has no terminal for',
+    '--edit-todo': 'it opens an editor a job has no terminal for, so the run would block holding the Queue until somebody killed it',
+    '-x': 'it runs an arbitrary command after every commit — general execution behind an allowlisted verb',
+    '--exec': 'it runs an arbitrary command after every commit — general execution behind an allowlisted verb',
+    '--update-refs': 'it moves the branch refs of the commits it rewrites, not only the branch it is on — refs the caller never named',
+  },
+  'cherry-pick': {
+    '-e': 'it opens an editor a job has no terminal for, so the run would block holding the Queue until somebody killed it',
+    '--edit': 'it opens an editor a job has no terminal for, so the run would block holding the Queue until somebody killed it',
+  },
+  push: {
+    '-f': 'a force push rewrites a remote anyone may already have fetched, and nothing here can undo it',
+    '--force': 'a force push rewrites a remote anyone may already have fetched, and nothing here can undo it',
+    '--force-with-lease': 'a force push rewrites a remote anyone may already have fetched, and nothing here can undo it',
+    '--force-if-includes': 'a force push rewrites a remote anyone may already have fetched, and nothing here can undo it',
+    '-d': 'it deletes a remote ref — the destination the caller is meant to name is meant to exist',
+    '--delete': 'it deletes a remote ref — the destination the caller is meant to name is meant to exist',
+    '--mirror': 'it publishes or deletes every ref the repository has, named or not',
+    '--all': 'it publishes every local branch, named or not',
+    '--branches': 'it publishes every local branch, named or not',
+    '--tags': 'it publishes every tag, named or not',
+    '--follow-tags': 'it publishes the annotated tags reachable from the pushed commit — refs the caller never named',
+    '--prune': 'it deletes remote-tracking refs the caller never named',
+    '--repo': 'it points the push at a repository other than the named remote',
+    '--receive-pack': 'it runs an arbitrary program on the other side of the connection — general execution behind an allowlisted verb',
+    '--exec': 'it runs an arbitrary program on the other side of the connection — general execution behind an allowlisted verb',
+  },
+}
+
+/**
+ * The per-verb blocked flag sets. The four new verbs derive theirs from
+ * `GIT_FLAG_REASONS`, so a flag added to a reason table cannot be missing from
+ * the guard — and a flag added without a reason fails the table-driven test.
+ */
+export const GIT_BLOCKED_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
   branch: new Set(['-d', '-D', '--delete', '-m', '-M', '--move']),
   commit: new Set(),
   add: new Set(),
   status: new Set(),
   diff: new Set(),
   log: new Set(),
+  fetch: new Set(Object.keys(GIT_FLAG_REASONS['fetch'] ?? {})),
+  rebase: new Set(Object.keys(GIT_FLAG_REASONS['rebase'] ?? {})),
+  'cherry-pick': new Set(Object.keys(GIT_FLAG_REASONS['cherry-pick'] ?? {})),
+  push: new Set(Object.keys(GIT_FLAG_REASONS['push'] ?? {})),
 }
+
+/**
+ * The flags a push accepts, as an allow list rather than a deny list.
+ *
+ * `restore` is the precedent (a deny list cannot express a complete surface),
+ * and push needs it more: it is the one verb whose effect lands on other people,
+ * so a flag nobody here vetted must be refused rather than passed through. What
+ * is on it: publish this one branch (`-u` records the upstream for the next
+ * call), and report what a push would do without doing it (`--dry-run`,
+ * `--porcelain`, `--progress`, `--quiet`, `--verbose`), plus `--atomic` and
+ * `--no-verify`.
+ */
+export const GIT_PUSH_ALLOWED_FLAGS: ReadonlySet<string> = new Set([
+  '-u', '--set-upstream', '--dry-run', '--porcelain', '--progress', '--no-progress',
+  '-q', '--quiet', '-v', '--verbose', '--atomic', '--no-verify',
+])
 
 /**
  * Verbs whose flag surface is an allow list rather than a deny list.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { RefusalError } from '../src/engine/errors'
-import { GRADLE_BLOCKED_FLAGS, SCRIPT_BINARIES } from '../src/engine/surface'
+import { GIT_FLAG_REASONS, GRADLE_BLOCKED_FLAGS, SCRIPT_BINARIES } from '../src/engine/surface'
 import { buildArgv, validate } from '../src/engine/validate'
 
 /**
@@ -78,7 +78,7 @@ describe('git restore guard (RestoreGuardTests)', () => {
   })
 
   it('keeps the destructive verbs out', () => {
-    for (const verb of ['reset', 'clean', 'checkout', 'switch', 'stash', 'push']) {
+    for (const verb of ['reset', 'clean', 'checkout', 'switch', 'stash']) {
       refusal(() => validate(['git', verb, '--', 'lib/a.dart']))
     }
   })
@@ -246,6 +246,11 @@ describe('npm surface (NpmSurfaceTests)', () => {
     ['npm', 'exec', '--', 'vitest', 'run'],
     ['npm', 'why', 'svelte'],
     ['npm', 'install', '--location=project'],
+    ['npm', 'install', '--workspace', 'app'],
+    ['npm', 'install', '-wapp'],
+    ['npm', 'run', 'build', '-w', 'app'],
+    ['npm', 'test', '-w', 'app'],
+    ['npm', '-w', 'app', 'run', 'build'],
     ['npx', 'vitest', 'run'],
     ['npx', '--', 'vite', 'build'],
   ]
@@ -267,8 +272,10 @@ describe('npm surface (NpmSurfaceTests)', () => {
     ['npm', 'install', '--global', 'typescript'],
     ['npm', 'install', '--location=global'],
     ['npm', 'install', '--location', 'global'],
-    ['npm', 'test', '-w', 'app'],
-    ['npm', 'install', '--workspace', 'app'],
+    ['npm', 'install', '--workspaces'],
+    ['npm', 'install', '-ws'],
+    ['npm', 'install', '--include-workspace-root'],
+    ['npm', 'run', 'build', '--workspace-root'],
     ['npm', 'exec', 'node', '--version'],
     ['npm', 'exec', 'cmd', '/c', 'echo hi'],
     ['npm', 'exec'],
@@ -300,6 +307,10 @@ describe('npm surface (NpmSurfaceTests)', () => {
       [['npm', 'start'], ['npm', 'run', 'start']],
       [['npm', 'start', '--', '--host'], ['npm', 'run', 'start', '--', '--host']],
       [['npm', 'test', '--', '--coverage'], ['npm', 'run', 'test', '--', '--coverage']],
+      // The shorthand is found through the selector, not read as the verb
+      // `-w`: the normalised argv is what the lane guess and the digest read.
+      [['npm', '-w', 'app', 'test'], ['npm', '-w', 'app', 'run', 'test']],
+      [['npm', '--workspace=app', 'start'], ['npm', '--workspace=app', 'run', 'start']],
     ]
     for (const [argv, want] of cases) {
       const normalised = [...argv]
@@ -337,11 +348,25 @@ describe('npm surface (NpmSurfaceTests)', () => {
       ['npm', 'install', '--prefix', 'elsewhere'],
       ['npm', 'install', '-C', 'elsewhere'],
       ['npm', 'install', '-g', 'typescript'],
-      ['npm', 'install', '--workspace', 'app'],
+      ['npm', 'install', '--workspaces'],
       ['pnpm', 'install', '--workspace', 'app'],
+      ['pnpm', 'run', 'build', '-w'],
     ]) {
       const message = refusal(() => validate([...argv]))
       expect(message, `argv=${JSON.stringify(argv)}`).toContain('pinned')
+    }
+  })
+
+  it('says "every member" when the refused spelling means the whole workspace', () => {
+    // `--workspaces` is not "somewhere else", it is "all of them at once", and
+    // the refusal has to read that way or the caller retries the same shape.
+    for (const argv of [
+      ['npm', 'install', '--workspaces'],
+      ['npm', 'install', '-ws'],
+      ['npm', 'install', '--include-workspace-root'],
+    ]) {
+      const message = refusal(() => validate([...argv]))
+      expect(message, `argv=${JSON.stringify(argv)}`).toContain('every workspace member')
     }
   })
 
@@ -502,5 +527,205 @@ describe('gradlew surface (GradleSurfaceTests)', () => {
     const argv = ['gradlew.bat', ':app:help']
     validate(argv)
     expect(argv[1]).toBe('--no-daemon')
+  })
+})
+
+describe('workspace selectors (WorkspaceSelectorTests)', () => {
+  // A selector is not a retarget: the manager still launches in the pinned cwd,
+  // so what is guarded is only the *directory* shapes that leave the tree. Both
+  // flag positions are covered because both are accepted — and the post-verb one
+  // used to pass unguarded, `--filter ../..` included.
+  const ALLOWED: string[][] = [
+    ['pnpm', '--filter', 'web', 'run', 'build'],
+    ['pnpm', '-F', 'web', 'run', 'build'],
+    ['pnpm', '--filter=@dsh/desktop', 'run', 'bundle'],
+    ['pnpm', '-F@dsh/desktop', 'run', 'bundle'],
+    ['pnpm', '--filter', '@dsh/*', 'run', 'test'],
+    ['pnpm', '--filter', '...web', 'run', 'build'],
+    ['pnpm', '--filter', '...@dsh/*', 'run', 'build'],
+    ['pnpm', '--filter', '[origin/main]', 'run', 'test'],
+    ['pnpm', '--filter', '.', 'run', 'build'],
+    ['pnpm', '--filter', './packages/web', 'run', 'build'],
+    ['pnpm', '--filter', '{packages}', 'run', 'build'],
+    ['pnpm', 'run', '--filter', 'web', 'build'],
+    ['pnpm', 'run', '--filter=web', 'build'],
+    ['npm', '-w', 'app', 'run', 'build'],
+    ['npm', '--workspace=app', 'run', 'build'],
+    ['npm', 'run', 'build', '-w', 'app'],
+    ['npm', 'exec', '-w', 'app', 'vitest', 'run'],
+  ]
+
+  const REFUSED: string[][] = [
+    ['pnpm', '--filter', '../..', 'run', 'build'],
+    ['pnpm', '--filter=../other', 'run', 'build'],
+    ['pnpm', '--filter', 'D:\\elsewhere', 'run', 'build'],
+    ['pnpm', '--filter', '/rooted', 'run', 'build'],
+    ['pnpm', 'run', 'build', '--filter', '../..'],
+    ['pnpm', 'run', 'build', '--filter=../other'],
+    // The whole-workspace spelling: not a retarget, still refused.
+    ['pnpm', '--filter', '!web', 'run', 'build'],
+    // pnpm's -w/--workspace is --workspace-root, not a selector.
+    ['pnpm', '-w', 'run', 'build'],
+    ['pnpm', '--workspace', 'web', 'run', 'build'],
+    // A selector with nothing after it names no member.
+    ['pnpm', '--filter'],
+    ['npm', '-w'],
+  ]
+
+  it('allows a selector on either side of the verb', () => {
+    for (const argv of ALLOWED) {
+      validate([...argv])
+    }
+  })
+
+  it('refuses a selector the tree does not contain', () => {
+    for (const argv of REFUSED) {
+      refusal(() => validate([...argv]))
+    }
+  })
+
+  it('says which bound a selector broke', () => {
+    const cases: ReadonlyArray<readonly [string[], string]> = [
+      [['pnpm', '--filter', '../..', 'run', 'build'], 'must name a directory inside'],
+      [['pnpm', '--filter', '/rooted', 'run', 'build'], 'must be relative'],
+      [['pnpm', '--filter', '!web', 'run', 'build'], 'whole-workspace'],
+      [['pnpm', '--filter'], 'needs a workspace selector value'],
+      [['npm', '-w'], 'needs a workspace selector value'],
+    ]
+    for (const [argv, fragment] of cases) {
+      const message = refusal(() => validate([...argv]))
+      expect(message, `argv=${JSON.stringify(argv)}`).toContain(fragment)
+    }
+  })
+
+  it('still refuses pnpm\'s -w, which is a workspace root and not a selector', () => {
+    const message = refusal(() => validate(['pnpm', 'run', 'build', '-w']))
+    expect(message).toContain('pinned')
+  })
+})
+
+describe('git write surface (GitWriteSurfaceTests)', () => {
+  // The verbs added for a fork kept in step with upstream. What makes them a
+  // surface rather than four new names is the third refusal reason:
+  // **it would block**. A job has no terminal, so an interactive rebase or an
+  // `--edit` cherry-pick waits for an editor that never answers, holding the
+  // Queue lane — the failure the long lane exists to prevent.
+  const ALLOWED: string[][] = [
+    ['git', 'fetch'],
+    ['git', 'fetch', 'upstream'],
+    ['git', 'fetch', '--prune', 'origin'],
+    ['git', 'fetch', '--all'],
+    ['git', 'rebase', 'upstream/main'],
+    ['git', 'rebase', '--onto', 'upstream/main', 'HEAD~3'],
+    ['git', 'rebase', '--autostash', 'upstream/main'],
+    ['git', 'rebase', '--continue'],
+    ['git', 'rebase', '--abort'],
+    ['git', 'rebase', '--skip'],
+    ['git', 'cherry-pick', 'abc123'],
+    ['git', 'cherry-pick', '-x', 'abc123'],
+    ['git', 'cherry-pick', '-n', 'abc123'],
+    ['git', 'cherry-pick', 'abc123..def456'],
+    ['git', 'cherry-pick', '--abort'],
+    ['git', 'push', 'origin', 'feature'],
+    ['git', 'push', 'origin', 'HEAD:refs/heads/feature'],
+    ['git', 'push', '-u', 'origin', 'feature'],
+    ['git', 'push', '--dry-run', 'origin', 'feature'],
+    ['git', 'push', 'origin', 'feature', 'other'],
+    ['git', 'push', 'https://github.com/cup113/dsh-tool-bridge.git', 'feature'],
+    ['git', 'push', 'git@github.com:cup113/dsh-tool-bridge.git', 'feature'],
+    ['git', 'push', '--', 'origin', 'feature'],
+  ]
+
+  // argv -> the fragment its refusal must contain.
+  const REFUSED: ReadonlyArray<readonly [string[], string]> = [
+    [['git', 'push'], 'needs a remote and a destination ref'],
+    [['git', 'push', 'origin'], 'needs a destination ref'],
+    [['git', 'push', 'origin', '+feature'], 'must not force'],
+    [['git', 'push', 'origin', ':feature'], 'not delete'],
+    [['git', 'push', 'origin', 'refs/heads/*:refs/heads/*'], 'not a pattern'],
+    [['git', 'push', '--force', 'origin', 'feature'], 'force push rewrites'],
+    [['git', 'push', '-f', 'origin', 'feature'], 'force push rewrites'],
+    [['git', 'push', '--force-with-lease', 'origin', 'feature'], 'force push rewrites'],
+    [['git', 'push', '--delete', 'origin', 'feature'], 'deletes a remote ref'],
+    [['git', 'push', '--mirror', 'origin'], 'every ref the repository has'],
+    [['git', 'push', '--all', 'origin'], 'every local branch'],
+    [['git', 'push', '--tags', 'origin'], 'every tag'],
+    [['git', 'push', '--prune', 'origin'], 'remote-tracking refs'],
+    [['git', 'push', '--repo', 'elsewhere', 'origin', 'feature'], 'other than the named remote'],
+    [['git', 'push', 'origin', 'feature', '--push-option=ci.skip'], 'flag not allowed'],
+    // A path remote writes into a repository the pinned cwd does not contain.
+    [['git', 'push', '../elsewhere', 'feature'], 'not a local path'],
+    [['git', 'push', 'file:///D:/elsewhere', 'feature'], 'not a local path'],
+    // It would block: no terminal, so an editor never answers.
+    [['git', 'rebase', '-i', 'upstream/main'], 'no terminal'],
+    [['git', 'rebase', '--interactive', 'upstream/main'], 'no terminal'],
+    [['git', 'rebase', '--autosquash', 'upstream/main'], 'implies --interactive'],
+    [['git', 'rebase', '--edit-todo'], 'no terminal'],
+    [['git', 'cherry-pick', '-e', 'abc123'], 'no terminal'],
+    [['git', 'cherry-pick', '--edit=abc123'], 'no terminal'],
+    // It runs something.
+    [['git', 'rebase', '-x', 'make test'], 'arbitrary command'],
+    [['git', 'rebase', '--exec=make test'], 'arbitrary command'],
+    [['git', 'fetch', '--upload-pack=sh'], 'arbitrary program'],
+    // It writes a ref the caller did not name.
+    [['git', 'rebase', '--update-refs', 'upstream/main'], 'refs the caller never named'],
+    [['git', 'fetch', '--force'], 'local ones'],
+    [['git', 'fetch', '--tags'], 'every remote tag'],
+    [['git', 'fetch', '--recurse-submodules'], 'submodules the caller never named'],
+  ]
+
+  it('allows the documented forms', () => {
+    for (const argv of ALLOWED) {
+      validate([...argv])
+    }
+  })
+
+  it('refuses the forms that would publish, rewrite or block', () => {
+    for (const [argv, fragment] of REFUSED) {
+      const message = refusal(() => validate([...argv]))
+      expect(message, `argv=${JSON.stringify(argv)}`).toContain(fragment)
+    }
+  })
+
+  it('names the verbs it now accepts, so the refusal is self-correcting', () => {
+    const message = refusal(() => validate(['git', 'push', '--force', 'origin', 'feature']))
+    for (const verb of ['fetch', 'rebase', 'cherry-pick', 'push']) {
+      // Only the unknown-verb refusal lists the surface; this one must still
+      // say which flag and why, not list everything.
+      expect(message).toContain('git push flag not allowed')
+    }
+  })
+
+  it('refuses every flag in the reason tables with its own reason', () => {
+    // Table-driven, the gradlew pattern: a flag added to a reason table cannot
+    // slip through the guard, and a flag refused *without* a reason is visible
+    // here rather than reading as the generic "not allowed".
+    for (const [verb, reasons] of Object.entries(GIT_FLAG_REASONS)) {
+      const flags = Object.keys(reasons).sort()
+      expect(flags.length, verb).toBeGreaterThan(0)
+      for (const flag of flags) {
+        const message = refusal(() => validate(['git', verb, flag]))
+        expect(message, `${verb} ${flag}`).toContain(`${verb} flag not allowed`)
+        expect(message, `${verb} ${flag}`).toContain('—')
+      }
+    }
+  })
+
+  it('still refuses the verbs that stay out', () => {
+    for (const verb of ['reset', 'clean', 'checkout', 'switch', 'stash', 'merge', 'pull']) {
+      refusal(() => validate(['git', verb, '--', 'lib/a.dart']))
+    }
+  })
+
+  it('does not let a push hide behind the -- separator', () => {
+    // After `--` a token is a refspec, so a `:ref` there is still a deletion.
+    refusal(() => validate(['git', 'push', 'origin', '--', ':feature']))
+  })
+
+  it('keeps git config injection out of every verb, push included', () => {
+    // A config flag is an argv *before* the verb, and the verb may not be one.
+    for (const verb of ['push', 'fetch', 'rebase']) {
+      refusal(() => validate(['git', '-c', 'core.sshCommand=sh', verb]))
+    }
   })
 })

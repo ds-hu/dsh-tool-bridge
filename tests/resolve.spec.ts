@@ -144,6 +144,17 @@ describe('long-lane detection', () => {
     ['pnpm', ['run', 'start', '--', '--host']],
     ['pnpm', ['exec', 'vite', 'dev']],
     ['pnpm', ['exec', 'vitest']],
+    // A workspace selector, on either side of the verb: the job is still long,
+    // which is the whole point — reading the selector's *value* as the script
+    // name is what once put a dev server on the queue lane.
+    ['pnpm', ['--filter', 'web', 'run', 'dev']],
+    ['pnpm', ['-F', 'web', 'run', 'start']],
+    ['pnpm', ['run', '--filter', 'web', 'dev']],
+    ['pnpm', ['run', '--filter=web', 'dev']],
+    ['pnpm', ['-F', 'web', 'exec', 'vite', 'dev']],
+    ['npm', ['-w', 'app', 'run', 'start']],
+    ['npm', ['--workspace=app', 'run', 'serve']],
+    ['npm', ['run', 'dev', '-w', 'app']],
     // The npm spellings, including the normalised shorthands: `npm start` is
     // passed the way `ToolHub.submit` passes it, i.e. already `run start`.
     ['npm', ['run', 'dev']],
@@ -175,6 +186,10 @@ describe('long-lane detection', () => {
     ['npm', ['exec', 'vitest', 'run']],
     ['npm', ['exec', 'vite', 'build']],
     ['npm', ['test']],
+    ['npm', ['-w', 'app', 'run', 'build']],
+    ['npm', ['--workspace=app', 'run', 'test']],
+    ['pnpm', ['--filter', 'web', 'run', 'build']],
+    ['pnpm', ['run', '--filter', 'web', 'test']],
     ['npx', ['vitest', 'run']],
     ['npx', ['vite', 'build']],
     ['npx', ['--version']],

@@ -114,11 +114,26 @@ _Avoid_: node package manager, PM, npm (that names one member, not the concept)
 
 **Package-manager surface**:
 The named verbs a **Package manager** accepts (`install`, `add`, `run`, `exec`,
-`why`, …), with the cwd-retargeting flags refused and `exec` narrowed to a
-**Script binary** — because `exec` also runs anything on `PATH`. The verb set is
-per manager, because the tools differ in fact: npm has `ci`, pnpm does not, and
-npm's `ls` lists packages where pnpm's lists scripts.
+`why`, …), with the cwd-retargeting flags refused, a **Workspace selector**
+accepted on either side of the verb, and `exec` narrowed to a **Script binary**
+— because `exec` also runs anything on `PATH`. The verb set is per manager,
+because the tools differ in fact: npm has `ci`, pnpm does not, and npm's `ls`
+lists packages where pnpm's lists scripts.
 _Avoid_: package manager access, npm passthrough (the two are peers, not one surface)
+
+**Workspace selector**:
+The package manager's own flag that picks *which* member of a workspace a command
+runs in — pnpm's `--filter`/`-F`, npm's `-w`/`--workspace`. It is **not** a
+retarget: the manager still launches in the **Working directory**, so the **Lane**
+key is unchanged and what moves is only the *script's* directory, to a member of
+the workspace that directory already belongs to. A selector that names a
+directory (`./packages/web`, `.`, `{packages}`) is therefore held to the
+literal-path rules; one that names a package (`@dsh/*`, `...foo`,
+`[origin/main]`) is the workspace's own topology and is left to resolve. The
+whole-workspace spellings (`--workspaces`, `-ws`, `--include-workspace-root`, and
+pnpm's `-w`/`--workspace`, which is `--workspace-root` there) are refused, and so
+is a `!` exclusion, because it means every member *except* the ones named.
+_Avoid_: workspace flag, filter (that is one manager's spelling), package target
 
 **Exec form**:
 The shape that runs a **Script binary** through a **Package manager**: `pnpm
@@ -320,10 +335,35 @@ The rule that `restore` accepts only literal, relative, non-wildcard paths — n
 `.`, `..`, `:` magic, glob, absolute path, or `--pathspec-from-file`.
 _Avoid_: path validation, path check
 
+**Named destination**:
+The pair a `git push` must carry in its argv: a **remote** (a name git resolves
+through its config, or a URL — never a filesystem path, which would write into a
+repository the **Working directory** does not contain) and a **destination ref**
+(`feature`, `HEAD:refs/heads/feature`). It is the **Pathspec guard** one surface
+over: `restore` must name the files it discards, a push must name the ref it
+publishes. A bare `git push` is refused for naming nothing, not for what it would
+write, and a `+refspec`, a `:refspec` and a wildcard refspec are refused because
+each publishes or removes a ref the caller did not name.
+_Avoid_: target branch, push args, upstream (that is exactly what a bare push falls back to, which is the refused shape)
+
+**No-TTY flag**:
+A flag refused because a **Job** has no terminal, not because it could lose work:
+`rebase -i`/`--interactive`/`--autosquash`, `cherry-pick -e`, and `--exec` after
+every rebased commit. The failure the first group would cause is a *hang* — the
+job blocks waiting for an editor that will never answer, holding its **Queue**
+lane until somebody kills it — which is why the flags are refused by name instead
+of being discovered. `rebase --abort`/`--continue`/`--skip` are accepted, or a
+conflict would have no way out.
+_Avoid_: interactive flag, blocking flag, dangerous flag (it destroys nothing)
+
 **Destructive (git)**:
-Irreversible **and** not confined to paths the caller just named. `reset --hard` is
-destructive; `restore .` is destructive; `restore -- lib/a.dart` is not.
-_Avoid_: history-rewriting (too narrow — `restore .` rewrites no history and is still destructive)
+Irreversible **and** not confined to the paths — or, on a remote, the ref — the
+caller just named. `reset --hard` is destructive; `restore .` is destructive; a
+force push and a `:refspec` deletion are destructive on the remote; `restore --
+lib/a.dart`, `rebase upstream/main` and `push origin feature` are not: the first
+names what it discards, the second is recoverable through the reflog and
+`rebase --abort`, and the third names what it publishes.
+_Avoid_: history-rewriting (too narrow — `restore .` rewrites no history and is still destructive, and a rebase is history-rewriting but not destructive)
 
 **Inline message**:
 A commit message passed as the `message` field, which the **Toolchain half** folds
@@ -449,6 +489,9 @@ kept under that term.
 - A **Script binary** is resolved in the **Working directory** and runs under `node`; an **Exec form** accepts one of those names and nothing else.
 - A **Wrapper entry** is resolved in the **Working directory** or a guarded `-p` directory inside it and runs under `JAVA_HOME`; a `gradlew` **Job** is a **Queue** job whose argv carries a normalised `--no-daemon`, so "settled" and "nothing resident left" stay the same instant (ADR-0013).
 - A **Package manager** is chosen by the caller; a **Run shorthand** is normalised to `run <script>` before the **Long lane** guess, the job JSON and the **Digest** read the argv, so a shorthand is never a second surface.
+- A **Workspace selector** is not a retarget: the manager launches in the **Working directory** and the **Lane** key is unchanged, so a selector narrows which member's script runs and never moves the job; only a *directory* selector can escape, and that one is held to the literal-path rules.
+- A **Long job** is still guessed from the script name when a selector sits in front of it — on either side of the verb — because reading the selector's value as the script name is how a dev server once landed on the **Queue**.
+- A `git push` carries a **Named destination**: the ref it publishes is never taken from the upstream config, and a force, deletion or wildcard refspec is refused; `fetch`, `rebase` and `cherry-pick` are accepted, with the flags that would block (**No-TTY flag**) or run something (`--exec`, `--upload-pack`) refused by name.
 - The two **Package managers** share one retargeting guard but not one verb set; a lockfile is advisory, so naming the manager is the caller's call and the other manager's lockfile may be written by mistake.
 - A **Known-failure registry** is read per **Job** from the **Working directory**; with no registry there is no **Baseline report** at all.
 - A **Baseline report** names the new failures; the `summary` suffix only counts them, so "which ones" is never read off the one-liner.
@@ -542,3 +585,11 @@ completion notices are the same either way.
 - "an always-on MCP server" — resolved: there is none. No server process and no schema exists until a conversation's **Switch** mounts one, and that mount is disposed with the switch or the conversation.
 - "the walkthrough proves the UI works" — resolved: it does not, by itself. A **UI walkthrough** is exploratory and produces artifacts and findings; only a script-driven E2E run produces a **Digest** with **Counts** and a **Failure inventory** that CI can repeat.
 - "the panel opened from the right sidebar is empty" — it was, with `Jobs (0)` and `no working directory yet`, for the same conversation whose panel the composer row's icon opened with four job rows in it. The two entry points differ in one way: the row passed the conversation as a navigation parameter and the sidebar's own guide cannot, because a guide capsule opens a page type by kind alone. The panel had no other source for its conversation, so it asked the host about *no* conversation (`fetchState(sessionId ?? '')`), and `/state` read that empty id as "the only live session, whichever it is" and returned the view of nothing. Resolved by taking the conversation from the **Panel**'s own seat — session-scoped, so the framework hands the body the pane's session — and by refusing an empty id at the route (ADR-0012). The failure was silent by construction: a well-formed empty panel looks exactly like a quiet conversation.
+- "`npm --filter`" — there is no such flag. Measured: `npm --filter nonexistent-pkg run …` makes npm read `nonexistent-pkg` as its *command* ("Unknown command"), and `npm run --help` lists only `-w|--workspace <name>`, `--workspaces` and `--include-workspace-root`. `--filter` is pnpm's (its bundled help gives it the `-F` alias); npm's selector is `-w`/`--workspace` and was refused as a retarget until now. Both are **Workspace selectors** today, each in its own manager's spelling.
+- "a workspace selector is a retarget like `--prefix`" — resolved: it is not. `--prefix` moves the manager; a selector leaves it in the **Working directory** and picks a member of the workspace that directory belongs to, so the **Lane** is the same lane. What follows from that honestly: a package *name* is resolved by the workspace and may land in a member the pinned cwd does not contain, so two sessions can drive one subtree from two lanes — the race `gradlew -p android` already had (ADR-0002, amended).
+- "`--filter` after the verb was already worked" — it was not, it was merely *unguarded*: nothing looked at `--filter` at all, so `pnpm run --filter ../.. build` passed validation and ran a build outside the pinned cwd. The selector is now guarded in both flag positions, because both are accepted.
+- "rebase rewrites history, so it must be refused" — resolved: it is accepted. A local rewrite is recoverable (the reflog, `ORIG_HEAD`, `rebase --abort`), the pushed direction stays refused (a force push), and what is actually dangerous in a job with no terminal is an *interactive* rebase, which blocks instead of failing — a **No-TTY flag**.
+- "the long-lane guess reads the script name" — it read the first non-flag token, which is a flag's *value* when a selector precedes the script: `pnpm run --filter web dev` was guessed one-shot, the queue-starving direction. It now reads past the flags that take a value, on either side of the verb.
+- "a push needs a GitHub token in the process" (README) — resolved: it never did, and that sentence was already untrue of a plugin that *is* the harness process. Authentication is the machine's own git credential store, the plugin reads and stores nothing, and a job's stdin is `ignore` with `GIT_TERMINAL_PROMPT=0`, so a push that needs an answer fails with git's message instead of hanging. What the old refusal bought was one approval click, on a path the protocol recorded as flaky.
+- "`git push` is refused by the bridge" (README, the tool description, the global protocol) — resolved: the *unnamed* push is refused. `git push origin feature` is accepted in the **Named destination** shape; force, deletion, mirror, wildcard refspecs and a path remote stay out (ADR-0014).
+

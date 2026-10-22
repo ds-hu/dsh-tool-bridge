@@ -63,13 +63,11 @@ export function planRun(spec: RunSpec, cwd: string, dartFormatExe: string): RunP
   const argv = [spec.cmd, ...spec.args]
   const { argv: resolvedArgv, env } = resolveLaunch(argv, dartFormatExe === '' ? null : dartFormatExe, cwd)
   // The overrides come last, so nothing in the job's own environment can put
-  // colour back into a log a model has to read (see `engine/env.ts`).
+  // colour back into a log a model has to read (see `engine/env.ts`). They
+  // include `GIT_TERMINAL_PROMPT=0`: a prompt this process has no terminal to
+  // answer would cost the whole job, and the override covers the git a job runs
+  // *without* being git — `pnpm run release` and `flutter pub` shell out too.
   const merged: NodeJS.ProcessEnv = { ...process.env, ...env, ...TOOL_ENV_OVERRIDES }
-  // Nothing may block on a prompt this process has no terminal to answer: a git
-  // credential or signing prompt would hang a job until its timeout.
-  if (resolvedArgv.some((token) => token.toLowerCase().includes('git'))) {
-    merged.GIT_TERMINAL_PROMPT = '0'
-  }
   return { argv, resolvedArgv, env: merged }
 }
 

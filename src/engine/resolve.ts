@@ -22,7 +22,7 @@
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { basename, delimiter, dirname, join, sep } from 'node:path'
 
-import { commandName, execTarget, flagValue } from './argv'
+import { commandName, execTarget, flagValue, runScriptToken, splitManagerGlobals } from './argv'
 import { ToolFailure } from './errors'
 import {
   GRADLE_PROJECT_DIR_FLAGS,
@@ -178,20 +178,27 @@ export function dartFormatTarget(argv: readonly string[], pin: string | null): s
  * the job is submitted), which is why the shorthand needs no case of its own —
  * and why this must be applied to the *normalised* argv, never the caller's
  * typing.
+ *
+ * A workspace selector may sit on either side of the verb
+ * (`pnpm --filter web run dev`, `pnpm run --filter web dev`), so the globals are
+ * lifted before the verb is read — and the script name is read past the flags
+ * that take a value, because taking the first non-flag token read `web` as the
+ * script and put a dev server on the queue lane, starving every build behind it.
  */
 export function wantsLongLane(cmd: string, args: readonly string[]): boolean {
   let parts = [...args]
   let exe = commandName(cmd)
   if (PACKAGE_MANAGERS.has(exe)) {
-    const verb = parts[0] ?? ''
-    const rest = parts.slice(1)
+    const { rest } = splitManagerGlobals(exe, parts)
+    const verb = rest[0] ?? ''
+    const tail = rest.slice(1)
     if (verb === 'exec') {
-      const peeled = execTarget([cmd, ...args])
+      const peeled = execTarget([cmd, ...rest])
       if (peeled === undefined) return false
       exe = peeled.target
       parts = peeled.args
     } else if (verb === 'run' || verb === 'run-script') {
-      const script = rest.find((token) => !token.startsWith('-'))
+      const script = runScriptToken(tail)
       return script !== undefined && LONG_SCRIPTS.has(script)
     } else {
       return false

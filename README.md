@@ -320,6 +320,8 @@ Two sandbox facts shape the loop, both measured:
   rebase, cherry-pick and a named push** (0014).
 - `docs/vite-vitest-sandbox-findings.md` — the measurements behind the Node
   surface: which commands the sandbox kills, with what error, and why.
+- `CHANGELOG.md` — what each released version changed, and why; the entries are
+  written from the commit messages, which carry the measurements.
 - `src/engine/` — the pure logic and the reason each refusal exists.
 - `src/host/` — the plugin half: tools, lanes, the job ledger, the switches,
   the scoped browser mount, the sidebar's transport.

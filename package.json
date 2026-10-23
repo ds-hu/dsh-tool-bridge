@@ -1,6 +1,6 @@
 {
   "name": "@cup113/dsh-plugin-toolbridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Flutter/Dart and Node toolchains, guard-railed git verbs and ARB edits for a sandboxed DSH session, as native tools with per-conversation toggles and a sidebar panel.",
   "type": "module",

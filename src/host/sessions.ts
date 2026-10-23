@@ -44,6 +44,11 @@ export interface PanelState {
   /** The conversation this answers for, exactly as it was asked for. */
   sessionId: string
   toggles: ToggleState
+  /**
+   * The default a new conversation in this directory would seed from — the
+   * **Project default** (the last flip there), not the profile-wide configured
+   * defaults, so a panel read explains the row it is drawn beside.
+   */
   defaults: ToggleState
   cwd: string | null
   lanes: { queue: number; long: number }
@@ -145,7 +150,7 @@ export class SessionSwitches {
     return {
       sessionId,
       toggles,
-      defaults: this.store.defaultState,
+      defaults: this.store.defaultsFor(cwd),
       cwd: cwd ?? null,
       lanes: cwd === undefined ? { queue: 0, long: 0 } : this.engine.depth(cwd),
       browserMounted: this.applied.get(sessionId)?.unmountBrowser !== undefined,

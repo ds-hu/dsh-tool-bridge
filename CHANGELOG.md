@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **A directory's last flip is now the default for the next conversation there**
+  (ADR-0016). The switch row's state was durable per session, but its *default*
+  was one profile-wide pair, so every conversation that was about to need the
+  browser started with it off — and the flip that says otherwise is the step that
+  gets forgotten. The last flip in a working directory is now remembered as the
+  **Project default** (`toggles.json` grows a `projects` layer), a new
+  conversation seeds from it, and a directory with no record of its own inherits
+  the first remembered directory with the same folder name. The name bridge is
+  read-only — a flip is written under the exact directory it happened in — and
+  `defaults.bridge`/`defaults.browser` stay as the fallback for a directory
+  nothing was ever flipped in.
+
 ## [1.0.0] - 2026-10-23
 
 1.0.0 because the package's **identity** changed, not because the surface turned

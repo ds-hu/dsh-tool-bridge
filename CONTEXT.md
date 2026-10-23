@@ -48,6 +48,18 @@ browser half can be switched on with no connection behind it, so the row also
 reports the fact when the two disagree — starting, or failed with a reason.
 _Avoid_: setting, preference, flag, toggle-feature, header control
 
+**Project default**:
+The switch state a new conversation inherits from the working directory it
+starts in: whatever the last flip in that directory left, written by whichever
+conversation flipped it there — both halves, so the toolchain and the browser
+are remembered the same way. A directory with no record of its own inherits the
+first remembered directory with the same folder name (a checkout opened at
+another root is the same project to the human who flipped the switch), and only
+then do the configured defaults apply. The name bridge is read-only: a flip is
+written under the exact directory it happened in, never under the record it
+inherited from.
+_Avoid_: per-repo config, sticky setting, project preference, workspace default
+
 **Scoped mount**:
 Loading the MCP client into a scope minted for one agent, so its tools and its
 server process belong to that conversation alone and unwind with it; this
@@ -503,6 +515,8 @@ kept under that term.
 - A lane pair is keyed by **Working directory**, not by session: two conversations on one directory share one **Queue** and one **Long lane**, which is what stops two Flutter builds from sharing a `build/` directory.
 - An **Engine** serves whatever **Tool bridge** is loaded and keeps one **Job ledger** and one log directory for it.
 - A **Switch** decides what a conversation sees: the toolchain switch removes or restores the two tools' schemas on that conversation's own scope, and the browser switch mints or disposes the **Scoped mount** whose tools and process are that conversation's.
+- A new conversation starts from its directory's **Project default** — the last flip there, or the first remembered directory with the same folder name — because the alternative is a default that never follows the human; the configured defaults answer only where nothing was ever flipped, and a flip writes the conversation's own record and that directory's **Project default** together.
+- The **Project default**'s name bridge is read-only: a flip in a directory that inherited from a same-named one writes its own record, so the two diverge after that flip instead of mutating each other.
 - A **Panel** answers for the conversation of the seat it is drawn in, and every way into it lands the same page: the seat is session-scoped, so the framework hands the body that conversation, while the sidebar's own guide opens a page type by kind alone and cannot carry one (ADR-0012).
 - A **Scoped mount** belongs to one conversation: its scope is minted for one agent, so its tools and its MCP server process exist only while that switch is on and unwind with the conversation.
 - **Archiving a conversation stops its jobs**: a **Job** is owned by the calling session, and the jobs registry's Workspace archive admission ends every job an archived conversation owns.
@@ -577,8 +591,9 @@ kept under that term.
 - "tool" / "which tool" — resolved: a *model-facing tool* is `bridge_run` or `bridge_arb_edit` (or one of the mounted `mcp__ui__browser_*` names); an *accepted executable* is an entry in the **Allowlist**. Only the first is a **Switch** subject.
 - "toggle" / "switches" (as the code spells them) and the header control — resolved: one name, **Switch**; the store behind it is where its durability lives, not a second concept. The control moved out of the conversation header's action strip, where it competed for width on a phone, onto its own row above the composer card.
 - "the switch is on, so the browser is there" — resolved: no. A **Switch** carries intent; the connection is a fact. The row says so when they disagree (`browser starting…`, or `browser failed: <reason>` in red), because a switch showing on over an absent browser is worse than no switch at all.
+- "same folder name means the same project" — resolved as a deliberate simplification, not an identity. Two unrelated directories sharing a leaf name inherit each other's **Project default** until one of them is flipped in, and the row does not say where an inherited default came from. Accepted, because the alternative — a default that never follows the human — was the reported pain; the bridge never writes, so the records diverge after the first flip and no flip can rewrite another directory's default.
 - "the engine's queue" / "the bridge's queue" — resolved: there are as many lane pairs as there are working directories, and the **Job ledger** is the engine's own, while the *roster* the model reads is `ctx.jobs`'.
-- "a resume loses my switches" — resolved: it does not. The switch state is durable per session under the plugin's state directory; a conversation that is not in that document falls back to the configured defaults, which is what lets a default change apply to conversations nobody switched.
+- "a resume loses my switches" — resolved: it does not. The switch state is durable per session under the plugin's state directory; a conversation that is not in that document falls back to its directory's **Project default** — the last flip there, else the first remembered directory with the same folder name — and only then to the configured defaults, which is what lets a default change apply to conversations nobody switched.
 - "the tool bridge server" / "**Tool bridge** as the process I start" — resolved: there is no server, no port and no token. The plugin is loaded into a profile; the panel is a same-origin route plus a sidebar tab.
 - "escalation hole" / "提权口" was used for *a command that costs an extra approval* — resolved: there is no per-call approval at all now, so no such hole exists; the refusals of the **Allowlist** are a **Guardrail** (ADR-0001).
 - "where did the escalation go?" — resolved: to install time. The trust decision is installing the plugin and switching a half on for a conversation, not approving one command; switching the toolchain half off removes the tools' schemas, not their access.

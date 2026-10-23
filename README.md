@@ -55,16 +55,22 @@ harness's own `job_output`, `job_list` and `job_kill` read and stop it, it
 appears in the harness's job roster, and a finished background job wakes its
 conversation with a completion notice.
 
-**Two switches, per conversation.** *Toolchain* (default on) and *Browser*
-(default off), as a row of labelled switches directly above the input box — the
-harness's own seat for entries above the composer card, so on a phone they get a
-row of their own instead of a fight with the conversation header. Turning a
-switch off removes that half's tool schemas from the conversation's prompts — for
-the browser half it also closes the MCP server, so a conversation that never looks
-at a page pays nothing for the ability to. State is durable per session: a resumed
-conversation keeps what it had. A switch shows *intent*, and the row says so when
-the fact differs — `browser starting…`, or the reason in red when the mount
-failed. The icon at the row's end opens the panel in the sidebar.
+**Two switches, per conversation.** *Toolchain* (config default: on) and *Browser*
+(config default: off), as a row of labelled switches directly above the input
+box — the harness's own seat for entries above the composer card, so on a phone
+they get a row of their own instead of a fight with the conversation header.
+Turning a switch off removes that half's tool schemas from the conversation's
+prompts — for the browser half it also closes the MCP server, so a conversation
+that never looks at a page pays nothing for the ability to. State is durable per
+session: a resumed conversation keeps what it had. A new conversation starts from
+its directory's *project default* — the last flip a conversation made in that
+directory — so flipping *Browser* on once means later conversations in that
+project open with it on; a directory nothing was ever flipped in falls back to
+the configured `defaults`, and a directory with no record of its own inherits the
+first remembered directory with the same folder name. The switch row shows
+*intent*, and it says so when the fact differs — `browser starting…`, or the
+reason in red when the mount failed. The icon at the row's end opens the panel in
+the sidebar.
 
 **A sidebar panel** showing the conversation's working directory, both lanes'
 depth, the formatter pin, the browser's flags, every job with its digest
@@ -117,9 +123,9 @@ a patch override in the profile — and a patch replaces the targeted row's whol
 
 | Field | Default | Meaning |
 |---|---|---|
-| `stateDir` | `$DSH_HOME/toolbridge` | Where the plugin keeps the per-session switch record and the job logs |
-| `defaults.bridge` | `true` | Whether a new conversation starts with the toolchain tools |
-| `defaults.browser` | `false` | Whether a new conversation starts with Playwright MCP mounted |
+| `stateDir` | `$DSH_HOME/toolbridge` | Where the plugin keeps the per-session switch record, the per-directory project defaults and the job logs |
+| `defaults.bridge` | `true` | Whether a new conversation starts with the toolchain tools — the fallback for a directory no conversation has flipped a switch in yet |
+| `defaults.browser` | `false` | Whether a new conversation starts with Playwright MCP mounted — same fallback; the last flip in a directory takes precedence over it |
 | `dartFormatExe` | — | The formatter pin: the `dart.exe` CI formats with (see below) |
 | `playwright.browser` | `msedge` | The browser channel; `msedge` drives the Edge Windows already ships, so no download |
 | `playwright.caps` | `vision,devtools` | Playwright MCP capabilities: `vision` adds the coordinate mouse tools a canvas needs, `devtools` the recorders. Measured: 44 tools with both, ~25 for core alone |
@@ -349,9 +355,9 @@ Two sandbox facts shape the loop, both measured:
 ## Where the rest lives
 
 - `CONTEXT.md` — the vocabulary the code and the docs are written in: tool
-  bridge, engine, the two halves, switch, scoped mount, job ledger, lane depth,
-  working directory, guardrail, digest, format pin, uncommitted scope, sight —
-  plus the terms this refactor retired and why.
+  bridge, engine, the two halves, switch, project default, scoped mount, job
+  ledger, lane depth, working directory, guardrail, digest, format pin,
+  uncommitted scope, sight — plus the terms this refactor retired and why.
 - `docs/adr/` — the decisions: the allowlist is a guardrail (0001, amended for the
   trust decision); the working directory is pinned (0002, amended for the
   workspace selector); a sub-tool is a job (0003, amended); the Node surface and
@@ -359,7 +365,8 @@ Two sandbox facts shape the loop, both measured:
   conversation (0005, amended); npm is a package manager on the same terms
   (0006); **the plugin is the bridge** (0007); **the git surface carries fetch,
   rebase, cherry-pick and a named push** (0014); **cargo joins as a verb-guarded
-  build tool, and dependency resolution is its reason** (0015).
+  build tool, and dependency resolution is its reason** (0015); **a directory's
+  last flip is its project default** (0016).
 - `docs/vite-vitest-sandbox-findings.md` — the measurements behind the Node
   surface: which commands the sandbox kills, with what error, and why.
 - `CHANGELOG.md` — what each released version changed, and why; the entries are

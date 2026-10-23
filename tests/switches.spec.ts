@@ -71,6 +71,11 @@ class FakeStore {
   remember(id: string, cwd: string): void {
     this.directories.set(id, cwd)
   }
+
+  /** The panel read asks for the directory's default; this fake has only the configured one. */
+  defaultsFor(): ToggleState {
+    return { bridge: true, browser: false }
+  }
 }
 
 /** The switches, wired to one agent and nothing else. */

@@ -279,6 +279,16 @@ pnpm build          # both halves: lib/index.js and lib/client.js
 pnpm test           # vitest
 ```
 
+**`lib/` is committed** — the two entry points, not their source maps. This
+package is installed into a profile from git (`github:ds-hu/dsh-tool-bridge`), and
+a git dependency unpacks the repository's *tracked* files and builds nothing, so
+an ignored `lib/` ships a package whose `main` does not exist: the Loader answers
+`1 entry did not activate toolbridge … failed to import`. So `pnpm build` and
+stage `lib/` with the source change — `tests/package.spec.ts` fails if the entry
+points are missing or untracked. (A `prepare` script would be the alternative;
+it costs an `allowBuilds` entry *per resolved commit* in every consuming profile,
+which is why the sibling plugins commit `lib/` instead.)
+
 The engine under `src/engine/` is pure logic ported from the retired server with
 its test suite — the digest parsers, the known-failure split, the command
 surface, the ARB editor, the resolvers. Its specs read the same fixtures the

@@ -1,5 +1,10 @@
 node_modules/
-lib/
+# `lib/` is *committed* — the built entry points, not the maps. The profile
+# installs this plugin from git, and a git install ships only tracked files: with
+# `lib/` ignored, every install got a package whose `main` did not exist and the
+# Loader row answered `failed to import`. Rebuild and stage `lib/` with the source
+# change (tests/package.spec.ts fails if the entries are missing or untracked).
+lib/**/*.map
 .pnpm-store/
 coverage/
 *.tsbuildinfo

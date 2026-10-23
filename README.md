@@ -1,6 +1,6 @@
 # dsh-tool-bridge
 
-[![CI](https://github.com/cup113/dsh-tool-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/cup113/dsh-tool-bridge)
+[![CI](https://github.com/ds-hu/dsh-tool-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/ds-hu/dsh-tool-bridge)
 
 A **DSH plugin** that gives a file-sandboxed session the toolchain its sandbox
 denies — `flutter`/`dart`, the project's own Node tools, a guard-railed `git`,

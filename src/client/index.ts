@@ -35,7 +35,7 @@ import { PANEL_KIND, openPanel } from './openPanel'
 import { CLIENT_SERVICES } from './services'
 
 /** The tab type's identity: a package name is the natural value. */
-const TAB_ID = '@cup113/dsh-plugin-toolbridge'
+const TAB_ID = '@ds-hu/dsh-plugin-toolbridge'
 
 /** Services this half needs; every `ctx.<name>` it touches is listed there. */
 export const inject = [...CLIENT_SERVICES]

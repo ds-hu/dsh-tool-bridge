@@ -13,4 +13,4 @@
 #
 - insert:
     - id: toolbridge
-      name: '@cup113/dsh-plugin-toolbridge'
+      name: '@ds-hu/dsh-plugin-toolbridge'

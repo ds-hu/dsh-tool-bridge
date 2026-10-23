@@ -4,7 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0] - 2026-10-23
+
+1.0.0 because the package's **identity** changed, not because the surface turned
+over: `@cup113/dsh-plugin-toolbridge` is now `@ds-hu/dsh-plugin-toolbridge`,
+following the repository to `ds-hu`. A profile that installed the old name has to
+be re-added — the Loader row resolves this bundle through the profile's own
+dependency entry — and that is the one breaking change here. The rest is
+additive: cargo joins the surface with a digest flavor of its own.
 
 ### Added
 
@@ -43,6 +50,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The package is `@ds-hu/dsh-plugin-toolbridge`.** The repository moved to
+  `ds-hu` (the old remote answered `This repository moved` on the last push), so
+  the scope follows it. Three things carry the name and all three move together:
+  the manifest, the Loader row in `cordis.patch.yml` (`- id: toolbridge` keeps
+  its id), and the client half's bundle and panel-tab id — a row name that does
+  not resolve as a bare package name from the profile is a `failed to import`.
+  A profile that installed the old name has to be re-added under the new one: its
+  dependency entry is what the row resolves through.
 - `bridge_run`'s description teaches the cargo surface it now accepts, including
   that `cargo run` is **not** guessed onto the long lane (pass `long: true`) and
   that `clippy`/`fmt` are external subcommands accepted by name.
@@ -114,5 +129,6 @@ switch row above the composer, the sidebar panel, the digested test run with
 baseline attribution, the ARB editor, a guard-railed git verb set, the Gradle
 wrapper entry, and the format pin.
 
+[1.0.0]: https://github.com/ds-hu/dsh-tool-bridge/compare/v0.1.1...v1.0.0
 [0.1.1]: https://github.com/ds-hu/dsh-tool-bridge/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ds-hu/dsh-tool-bridge/releases/tag/v0.1.0

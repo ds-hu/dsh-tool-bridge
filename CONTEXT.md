@@ -1,8 +1,9 @@
 # tool-bridge
 
 A DSH plugin whose model-facing tools run the Flutter/Dart toolchain, a Node
-toolchain, a small git verb set and the ARB edit in-process for the conversation
-that called them — `bridge_run` and `bridge_arb_edit`, switched on or off per
+toolchain, a Rust build toolchain, a small git verb set and the ARB edit
+in-process for the conversation that called them — `bridge_run` and
+`bridge_arb_edit`, switched on or off per
 conversation from a row of switches above the input card, with a sidebar panel
 showing what the toolchain is doing. It is loaded into a profile, so it holds exactly what the
 harness process holds and has no port, token or status page of its own. This
@@ -96,8 +97,8 @@ _Avoid_: per-request exe, SDK override, toolchain pin (too broad: `dart analyze`
 
 **Allowlist**:
 The set of executables (`flutter`, `dart`, `git`, the **Package managers**, `npx`,
-`gradlew`, and the **Script binaries**) and the git/package-manager verbs the
-**Toolchain half** accepts.
+`gradlew`, `cargo`, and the **Script binaries**) and the git/package-manager/
+cargo verbs the **Toolchain half** accepts.
 _Avoid_: sandbox, security boundary, whitelist, permission system
 
 **Guardrail**:
@@ -122,17 +123,21 @@ lists packages where pnpm's lists scripts.
 _Avoid_: package manager access, npm passthrough (the two are peers, not one surface)
 
 **Workspace selector**:
-The package manager's own flag that picks *which* member of a workspace a command
-runs in — pnpm's `--filter`/`-F`, npm's `-w`/`--workspace`. It is **not** a
-retarget: the manager still launches in the **Working directory**, so the **Lane**
-key is unchanged and what moves is only the *script's* directory, to a member of
-the workspace that directory already belongs to. A selector that names a
+The tool's own flag that picks *which* member of a workspace a command runs in —
+pnpm's `--filter`/`-F`, npm's `-w`/`--workspace`, cargo's `-p`/`--package`. It is
+**not** a retarget: the tool still launches in the **Working directory**, so the
+**Lane** key is unchanged and what moves is only the *script's* directory, to a
+member of the workspace that directory already belongs to. A selector that names a
 directory (`./packages/web`, `.`, `{packages}`) is therefore held to the
-literal-path rules; one that names a package (`@dsh/*`, `...foo`,
-`[origin/main]`) is the workspace's own topology and is left to resolve. The
-whole-workspace spellings (`--workspaces`, `-ws`, `--include-workspace-root`, and
-pnpm's `-w`/`--workspace`, which is `--workspace-root` there) are refused, and so
-is a `!` exclusion, because it means every member *except* the ones named.
+literal-path rules; one that names a package (`@dsh/*`, `...foo`, `[origin/main]`,
+`itoa@1`) is the workspace's own topology and is left to resolve. The
+whole-workspace spellings (`--workspaces`, `-ws`, `--include-workspace-root`,
+pnpm's `-w`/`--workspace`, which is `--workspace-root` there, and cargo's
+`--workspace`/`--all`) are refused, and so is an exclusion — a `!` selector or
+cargo's `--exclude` — because it means every member *except* the ones named. One
+spelling is two flags on purpose-built evidence: pnpm's `-F` is a selector and
+cargo's `-F` is `--features`, npm's `-w` is a selector and pnpm's `-w` is the
+workspace root.
 _Avoid_: workspace flag, filter (that is one manager's spelling), package target
 
 **Exec form**:
@@ -166,6 +171,28 @@ to have no shell (the **Script binary** rule, one toolchain over). Resolved in t
 from `JAVA_HOME` only, never PATH. Every argv carries a forced `--no-daemon`,
 normalised at submit time, so a settled job leaves nothing resident behind.
 _Avoid_: script binary (that is the Node one), gradle CLI (not on PATH — the wrapper is the only entry), daemon (there is none; the flag forbids it)
+
+**Cargo surface**:
+The verbs the **Toolchain half** accepts from `cargo` **by name**, plus the flags it
+refuses and the two values it guards (the **Workspace selector** and the manifest
+path). An allow list rather than "any subcommand", because cargo dispatches an
+unknown name to a **Toolchain subcommand**; and a list at all — where `gradlew`
+has none — because cargo's verbs are enumerable where Gradle task names are not.
+What it exists for is **dependency resolution**: a confined cargo cannot reach
+crates.io, so `fetch`/`add`/`update` and any build that needs them are the
+surface's reason, while a build whose crates are already on disk runs in the
+sandbox anyway (ADR-0015).
+_Avoid_: cargo access, rust surface (it is one tool's surface), cargo passthrough
+
+**Toolchain subcommand**:
+A `cargo-<name>.exe` that cargo runs for a verb it does not implement itself —
+`cargo-clippy` and `cargo-fmt` from the toolchain, and anything `cargo install`
+put on `PATH`. Because `PATH` decides, "any verb" would be general execution
+behind an allowlisted name (the reason `pnpm exec` is narrowed), so a **Toolchain
+subcommand** is accepted only when its name is on the **Cargo surface** — and
+`clippy`/`fmt` are on it because they ship with the toolchain. Provenance cannot
+be the rule: rustup's shims and installed helpers share one directory (ADR-0015).
+_Avoid_: plugin, extension, cargo plugin, external command
 
 **Uncommitted scope**:
 The `scope: "uncommitted"` value: the **Working directory**'s uncommitted `.dart`
@@ -269,10 +296,12 @@ The parsed view of a finished test job: `flavor`, `summary`, `counts`,
 _Avoid_: result, report, analysis
 
 **Flavor**:
-Which test runner a **Digest** came from — `flutter` (`flutter test`/`dart test`)
-or `vitest`; it is set by the log parser that recognised its runner, so it
-survives an argv that cannot say (`pnpm run test`), and it is what tells two
-digests apart by the runner that wrote them.
+Which test runner a **Digest** came from — `flutter` (`flutter test`/`dart test`),
+`vitest`, or `cargo` (`cargo test`, whose logs are libtest's per-target blocks); it
+is set by the log parser that recognised its runner, so it survives an argv that
+cannot say (`pnpm run test`), and it is what tells two digests apart by the runner
+that wrote them. The name is the *tool*, not the harness behind it: a future
+`cargo nextest` would be its own flavor, not this one.
 _Avoid_: runner, kind, framework (a job is a `cmd` or an `arb-edit`; this is about the log)
 
 **Counts**:
@@ -496,6 +525,9 @@ kept under that term.
 - A **Known-failure registry** is read per **Job** from the **Working directory**; with no registry there is no **Baseline report** at all.
 - A **Baseline report** names the new failures; the `summary` suffix only counts them, so "which ones" is never read off the one-liner.
 - A **Flavor** comes from the log parser that recognised its runner, and it is what tells a vitest **Digest** from a Flutter one when the argv cannot say.
+- A **Cargo surface** member is accepted **by name**, because cargo would otherwise run a **Toolchain subcommand** from `PATH`; `clippy`/`fmt` are on the list because they ship with the toolchain, and provenance cannot separate them from an installed helper in the same directory (ADR-0015).
+- A `cargo test` **Digest** sums its **Counts** over the per-target `test result:` lines, and reads `ignored` as **Counts**' `skipped`; its **Suite verdict** needs cargo's own failure word as well, because a mixed run's last green target would otherwise speak for a red run.
+- A `cargo` **Job** is a **Queue** job even when it is `cargo run`: the guess is left to the caller with `long: true`, the same call `flutter run` and `dart run` are left with.
 - A **Tail** and an optional **Log filter** shape a tool result, not a job: the raw log is never rewritten.
 - **Lane depth** is what `aheadOf` reports for one **Job** and what the panel reads for both lanes of one directory.
 - A **UI walkthrough** drives an **App under test**: running it is the **Toolchain half**'s (a **Long job** in the **Working directory**), driving it is the **Browser half**'s, and the split is ADR-0005.
@@ -592,4 +624,8 @@ completion notices are the same either way.
 - "the long-lane guess reads the script name" — it read the first non-flag token, which is a flag's *value* when a selector precedes the script: `pnpm run --filter web dev` was guessed one-shot, the queue-starving direction. It now reads past the flags that take a value, on either side of the verb.
 - "a push needs a GitHub token in the process" (README) — resolved: it never did, and that sentence was already untrue of a plugin that *is* the harness process. Authentication is the machine's own git credential store, the plugin reads and stores nothing, and a job's stdin is `ignore` with `GIT_TERMINAL_PROMPT=0`, so a push that needs an answer fails with git's message instead of hanging. What the old refusal bought was one approval click, on a path the protocol recorded as flaky.
 - "`git push` is refused by the bridge" (README, the tool description, the global protocol) — resolved: the *unnamed* push is refused. `git push origin feature` is accepted in the **Named destination** shape; force, deletion, mirror, wildcard refspecs and a path remote stay out (ADR-0014).
+- "cargo is one of the **Package managers**" — resolved: it is not. It resolves dependencies, but its surface is not the package-manager surface: there is no `run <script>`, no **Exec form**, and `-p` names a workspace member rather than filtering scripts. Its own **Cargo surface** is an allow list of verbs, because cargo's verbs are enumerable where Gradle's task names are not, and because it dispatches an unknown one to a **Toolchain subcommand** on `PATH` (ADR-0015).
+- "cargo does not run in the sandbox" — measured: it does. `cargo build` with its crates already on disk finished in 4.05s inside `workspace-write`, `rustc` children and all. What the sandbox denies is **reaching crates.io**: `cargo fetch` there retried three times and died with `schannel: AcquireCredentialsHandle failed: SEC_E_NO_CREDENTIALS`, because a confined child runs under a low-integrity token. The narrow claim is the true one, and it is also the reason `fetch`/`add`/`update` are on the surface at all.
+- "`cargo install` builds the project" — resolved: it does not, it installs a binary into the machine's cargo bin directory (`%USERPROFILE%\.cargo\bin`), where rustup's own shims live. It is refused for that, not for building (ADR-0015).
+- "`cargo clippy` is a built-in verb, so the allow list can be built-ins only" — resolved: it is not. `clippy` and `fmt` are **Toolchain subcommands** (`cargo-clippy.exe`, `cargo-fmt.exe`) dispatched through `PATH`, and they are on the list by name; `cargo nextest` is the same shape and is refused, because a name allow list is what separates them — measured, rustup's shims and `cargo install`'s binaries share one directory.
 

@@ -67,6 +67,20 @@ export function isTestRun(argv: readonly string[]): boolean {
 }
 
 /**
+ * Whether argv is a `cargo test` invocation.
+ *
+ * Readable from the argv alone, unlike vitest behind a project's script name:
+ * `cargo test` names its runner, and the surface puts the verb first
+ * (`validateCargo`), so the second token is it.
+ */
+export function isCargoTestRun(argv: readonly string[]): boolean {
+  const first = argv[0]
+  const second = argv[1]
+  if (first === undefined || second === undefined) return false
+  return commandName(first) === 'cargo' && second === 'test'
+}
+
+/**
  * The blocked flag a token sets, if any.
  *
  * Handles the three shapes a flag travels in: `--dir x`, `--dir=x` and a short

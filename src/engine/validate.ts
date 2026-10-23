@@ -21,6 +21,12 @@ import type { ManagerSelector } from './argv'
 import { refuse } from './errors'
 import {
   ALLOWED_EXES,
+  CARGO_BLOCKED_FLAGS,
+  CARGO_FLAG_REASONS,
+  CARGO_MANIFEST_FLAGS,
+  CARGO_TOOLCHAIN_PREFIX,
+  CARGO_VERB_REASONS,
+  CARGO_VERBS,
   EXEC_BLOCKED_FLAGS,
   GIT_ALLOWED_FLAGS,
   GIT_BLOCKED_FLAGS,
@@ -124,6 +130,10 @@ export function validate(argv: string[]): void {
   if (exe === 'gradlew') {
     ensureNoDaemon(argv)
     validateGradle(argv.slice(1))
+    return
+  }
+  if (exe === 'cargo') {
+    validateCargo(argv.slice(1))
     return
   }
   if (PACKAGE_MANAGERS.has(exe)) {
@@ -388,10 +398,12 @@ export function flagRefusal(manager: string, flag: string): string {
 
 /** Why a workspace selector is refused: only a directory selector can escape. */
 export function selectorRefusal(manager: string, flag: string): string {
+  // The example is the manager's own shape: a package manager runs a script, a
+  // cargo selector sits after the verb that reads it.
+  const example = manager === 'cargo' ? `cargo test ${flag} web` : `${manager} ${flag} web run build`
   return (
     `${manager} ${repr(flag)} needs a workspace selector value, e.g. ` +
-    `${manager} ${flag} web run build — a selector with nothing after it ` +
-    'names no member at all'
+    `${example} — a selector with nothing after it names no member at all`
   )
 }
 
@@ -680,6 +692,40 @@ export function gradlePropertyRefusal(property: string): string {
   )
 }
 
+/** Why a refused cargo verb is refused, with its reason when the table has one. */
+export function cargoVerbRefusal(verb: string): string {
+  const listed = `cargo verb not allowed: ${repr(verb)} (allowed: ${sortedList(CARGO_VERBS)})`
+  const reason = CARGO_VERB_REASONS[verb]
+  if (reason !== undefined) {
+    return `${listed} — ${reason}`
+  }
+  return (
+    `${listed} — cargo dispatches a name it does not know to cargo-<name>.exe on ` +
+    'PATH, which is general execution behind an allowlisted command (the reason ' +
+    "`pnpm exec` is narrowed to the project's own tools); an installed helper " +
+    'such as cargo-binstall or cargo-nextest is refused for the same reason'
+  )
+}
+
+/** Why a refused cargo flag is refused; the reasons live beside the table. */
+export function cargoFlagRefusal(flag: string): string {
+  const reason = CARGO_FLAG_REASONS[flag]
+  return `cargo flag not allowed: ${repr(flag)}${reason === undefined ? '' : ` — ${reason}`}`
+}
+
+/**
+ * Why `cargo +<toolchain>` is refused: the toolchain is machine configuration,
+ * and every toolchain builds into the one `target/` a job owns.
+ */
+export function cargoToolchainRefusal(token: string): string {
+  return (
+    `cargo toolchain selection is not an argv argument here: ${repr(token)} — ` +
+    'the toolchain is machine configuration (rustup default, or RUSTUP_TOOLCHAIN ' +
+    'in the environment), and every toolchain shares the one target/ directory ' +
+    'a job builds into'
+  )
+}
+
 /**
  * The `gradlew` surface: no verb list, a flag deny list, and two guarded
  * members.
@@ -718,6 +764,77 @@ export function validateGradle(args: readonly string[]): void {
       const dir = flagValue(token, flag, args, index)
       if (dir !== null) {
         guardLiteralPath(dir, 'the gradlew project directory', 'a directory')
+      }
+    }
+  }
+}
+
+/**
+ * The `cargo` surface: an allow-listed verb, a flag deny list with two guarded
+ * values, and no verb in front of the flags.
+ *
+ * Verb-first is the package managers' rule, kept for the same reason: reading
+ * the verb past cargo's global flags would mean re-implementing cargo's own
+ * grammar (`cargo --offline build` is legal cargo), while the refusal can name
+ * the form that works. Nothing is lost, because everything cargo accepts
+ * globally it also accepts *after* the verb — `cargo build --offline`,
+ * `cargo test -p foo --locked`.
+ *
+ * No verb list is invented here: the members and the reasons live in
+ * `surface.ts`, beside the refusals that argue with them.
+ */
+export function validateCargo(args: readonly string[]): void {
+  const verb = args[0]
+  if (verb === undefined) {
+    refuse(403, 'cargo needs a verb, e.g. cargo build')
+  }
+  if (verb.startsWith(CARGO_TOOLCHAIN_PREFIX)) {
+    refuse(403, cargoToolchainRefusal(verb))
+  }
+  if (verb.startsWith('-')) {
+    refuse(
+      403,
+      `cargo needs a verb before flags: ${repr(verb)} — spell it after the ` +
+        `verb instead, e.g. 'cargo build ${verb}'`,
+    )
+  }
+  if (!CARGO_VERBS.has(verb)) {
+    refuse(403, cargoVerbRefusal(verb))
+  }
+  validateCargoBody(args.slice(1))
+}
+
+/**
+ * The flag region of a cargo argv: a deny list, a workspace selector, and a
+ * guarded manifest path.
+ *
+ * The deepening `cargo test -- <libtest args>` is the tool's own grammar, not
+ * this surface's, so scanning stops at `--`. The selector is *guarded* rather
+ * than refused (it picks one member of a workspace, not another directory), and
+ * `--manifest-path` goes through the literal-path rules `gradlew -p` uses, so a
+ * relative path can name a crate inside the pinned cwd and nothing else.
+ */
+export function validateCargoBody(body: readonly string[]): void {
+  for (const [index, token] of body.entries()) {
+    if (token === '--') {
+      return
+    }
+    if (!token.startsWith('-')) {
+      continue
+    }
+    const hit = blockedFlag(token, CARGO_BLOCKED_FLAGS)
+    if (hit !== null) {
+      refuse(403, cargoFlagRefusal(hit))
+    }
+    const selector = selectorAt('cargo', body, index)
+    if (selector !== null) {
+      guardSelectorValue('cargo', selector)
+      continue
+    }
+    for (const flag of CARGO_MANIFEST_FLAGS) {
+      const value = flagValue(token, flag, body, index)
+      if (value !== null) {
+        guardLiteralPath(value, 'the cargo manifest path', 'a file')
       }
     }
   }

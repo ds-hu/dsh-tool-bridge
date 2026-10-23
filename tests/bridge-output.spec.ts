@@ -31,6 +31,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { BridgeEngine } from '../src/host/bridge'
 import type { BridgeJobView } from '../src/host/bridge'
 import { Lanes } from '../src/host/queue'
+import { readTestDigest } from '../src/host/runner'
+import { whichOnPath } from '../src/engine/resolve'
 import { canSpawnPiped } from './support/spawn'
 
 const SCRATCH = fileURLToPath(new URL('./.tmp-bridge-output/', import.meta.url))
@@ -201,5 +203,53 @@ describe('an inline commit message reaches the argv, and only where it belongs',
     await expect(
       engine.submitCommand({ cmd: 'git', args: ['commit', '-m', 'inline'], message: 'both' }, agentAt(CWD)),
     ).rejects.toThrow(/not both/u)
+  })
+})
+
+/**
+ * `cargo` end to end: the guardrail accepts it, the job really starts, and its
+ * log is digested by the host's own entry point.
+ *
+ * The digest case is the wiring this file exists for — `readTestDigest` is what
+ * `BridgeEngine.annotate` calls, so a cargo parser that `digest.ts` exported but
+ * the host never reached would leave `counts` and `failures` absent from every
+ * cargo job while every parser test passed.
+ */
+describe('a cargo job is accepted, started and digested', () => {
+  const CARGO_FAILED = fileURLToPath(new URL('./fixtures/cargo_failed.txt', import.meta.url))
+
+  it('digests a cargo test log through the host entry point', () => {
+    const digest = readTestDigest(['cargo', 'test'], CARGO_FAILED)
+    expect(digest.counts).toEqual({ passed: 2, skipped: 1, failed: 1 })
+    expect(digest.summary).toBe('2 passed, 1 failed')
+    expect(digest.failures.map((failure) => failure.name)).toEqual(['tests::it_fails'])
+  })
+
+  it('plans and starts the command instead of refusing it', async () => {
+    if (whichOnPath('cargo') === null) {
+      // Not a pass and not a failure: this environment has no Rust toolchain,
+      // which is what the case needs (CI keeps it honest where cargo exists).
+      console.warn('cargo case skipped: cargo is not on PATH')
+      return
+    }
+    if (!(await canSpawnPiped())) {
+      console.warn('cargo case skipped: this environment denies a child with piped stdio')
+      return
+    }
+    const specs: JobSpec[] = []
+    const engine = new BridgeEngine({ jobs: recordingJobs(specs) } as unknown as Context, new Lanes(), {
+      logDir: LOGS,
+      dartFormatExe: '',
+    })
+
+    const view = await engine.submitCommand({ cmd: 'cargo', args: ['test'] }, agentAt(CWD))
+    // Nothing was rewritten: cargo has no shorthands and no forced flag.
+    expect(view.argv).toEqual(['cargo', 'test'])
+    expect(view.resolvedArgv).not.toBeNull()
+    const settled = await settledView(engine, view.id)
+    // The working directory holds no `Cargo.toml`, so cargo itself exits 101 —
+    // which is the point: the job ran, and the guardrail did not answer for it.
+    expect(settled.status).toBe('failed')
+    expect(settled.exitCode).not.toBe(0)
   })
 })

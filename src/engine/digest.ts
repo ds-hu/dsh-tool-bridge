@@ -1,18 +1,18 @@
 /**
  * Reading a test log back: what the runner said, and how much of it is complete.
  *
- * Two reporters are read — `package:test` (behind `flutter test`/`dart test`)
- * and vitest. Both write a *log*, not a result, so every number here is
- * recovered from lines meant for a human: the last progress line is the
- * authoritative count, the `[E]`/`FAIL` lines are the failure inventory, and a
- * terminal marker is the only proof the suite actually finished. The three are
- * kept apart deliberately, so a killed run can keep its inventory while
- * claiming no counts at all.
+ * Three reporters are read — `package:test` (behind `flutter test`/`dart test`),
+ * vitest, and libtest (behind `cargo test`). All three write a *log*, not a
+ * result, so every number here is recovered from lines meant for a human: the
+ * last progress line is the authoritative count, the `[E]`/`FAIL`/`FAILED` lines
+ * are the failure inventory, and a terminal marker is the only proof the suite
+ * actually finished. The three are kept apart deliberately, so a killed run can
+ * keep its inventory while claiming no counts at all.
  */
 
 import { readFileSync } from 'node:fs'
 import { stripAnsi } from './ansi'
-import { isTestRun, isVitestRun, mightRunVitest, splitPathAndName } from './argv'
+import { isCargoTestRun, isTestRun, isVitestRun, mightRunVitest, splitPathAndName } from './argv'
 import type { TestCounts, TestFailure, TestLogDigest } from './types'
 
 /* ------------------------------------------------------- package:test lines */
@@ -88,6 +88,62 @@ const VITEST_NO_TESTS = 'no tests'
  * registry rule can claim it on either runner.
  */
 const VITEST_LOAD_PREFIX = 'loading '
+
+/* ------------------------------------------------------------ libtest lines */
+
+/*
+ * `cargo test` runs libtest once per target — the unit-test binary, each
+ * integration test file, the doc tests — and every run writes its own block:
+ *
+ *      Running unittests src\lib.rs (target\debug\deps\probe-1a2b3c.exe)
+ *
+ * running 2 tests
+ * test tests::it_works ... ok
+ * test tests::it_fails ... FAILED
+ *
+ * failures:
+ *
+ * ---- tests::it_fails stdout ----
+ * thread 'tests::it_fails' panicked at src\lib.rs:22:9:
+ * ...
+ *
+ * failures:
+ *     tests::it_fails
+ *
+ * test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+ *
+ * So the counts are a **sum over targets**, the failure inventory is the
+ * `test <name> ... FAILED` lines in run order, and the verdict is the last
+ * `test result:` line. `ignored` is what the other two reporters call skipped;
+ * `measured` is the bench count and is not a test outcome. The `Running …` line
+ * before each block is what names the *suite* a failure belongs to, which is
+ * the `file` a known-failure entry can narrow on.
+ */
+const CARGO_RESULT_RE =
+  /^test result: (?<verdict>ok|FAILED)\. (?<passed>\d+) passed; (?<failed>\d+) failed; (?<ignored>\d+) ignored; (?<measured>\d+) measured; (?<filtered>\d+) filtered out; finished in /u
+const CARGO_TEST_RE = /^test (?<name>.+?) \.\.\. (?<outcome>ok|FAILED|ignored\b.*|bench:.*)$/u
+/*
+ * `--quiet` writes no per-test progress lines at all — measured, the failure
+ * appears as `tests::it_fails --- FAILED` above a `failures:` block, with an
+ * `i.. 3/4` progress line instead of the `test … ok` list. Reading only the
+ * `test … FAILED` shape there answers "no failures" for a run that exited 101,
+ * which is the same false green ADR-0011 closed one reporter over.
+ */
+const CARGO_QUIET_FAILED_RE = /^(?<name>\S.*?) --- FAILED$/u
+const CARGO_TARGET_RE = /^ +Running (?<target>.+?) \([^)]*\)$/u
+const CARGO_DOCTEST_RE = /^ +Doc-tests /u
+const CARGO_FAILURES_HEADER = 'failures:'
+const CARGO_UNITTESTS_PREFIX = 'unittests '
+/*
+ * cargo's own last word when a target never reached libtest. A compile error is
+ * not a test result, and a mixed run — one target compiled and passed, another
+ * failed to compile — would otherwise be summarized from the green target's
+ * counts, which is ADR-0011's false green one runner over.
+ */
+const CARGO_ERROR_MARKERS: readonly string[] = [
+  'error: could not compile',
+  'error: test failed',
+]
 
 /**
  * A log's lines, as Python's text-mode iteration yields them.
@@ -382,15 +438,126 @@ export function parseVitestLog(logPath: string): TestLogDigest {
 }
 
 /**
+ * Digest for a `cargo test` run.
+ *
+ * Counts are summed over the per-target `test result:` lines, because one cargo
+ * invocation runs several test binaries; `ignored` is the "not run" bucket the
+ * other two reporters spell `skipped`. The inventory is the `test <name> ...
+ * FAILED` progress lines in run order — the `failures:` block is read too, but
+ * only for what those lines missed, because `cargo test --quiet` writes the
+ * block and no progress lines at all (the same division `flutter test` gets from
+ * its `Failing tests:` block).
+ *
+ * The verdict comes from the `test result:` lines and from cargo's own failure
+ * word, which is what keeps a run whose target did not compile from being read
+ * as green off a sibling target's counts. No `test result:` line at all means
+ * the suite did not run — a compile error, or a killed job — and a summary that
+ * said "0 passed" there would be an invented answer.
+ */
+export function parseCargoLog(logPath: string): TestLogDigest {
+  const result = emptyDigest()
+  result.flavor = 'cargo'
+  const failures: TestFailure[] = []
+  const block: TestFailure[] = []
+  const lines = readLogLines(logPath)
+  if (lines === undefined) return result
+  let counts: TestCounts | null = null
+  let verdict: SuiteVerdict = 'unfinished'
+  let cargoSaidError = false
+  let file: string | null = null
+  let inBlock = false
+  /*
+   * The names a `failures:` block is listing right now, held until the
+   * `test result:` line they summarise arrives. Holding them is what keeps a
+   * failing test's *own* output out of the inventory: `---- <name> stdout ----`
+   * prints the test's text at column 0, so a test that prints `failures:` and an
+   * indented list would otherwise be read as libtest's summary. A commit — not a
+   * push — also means the last block wins per target, which is how libtest writes
+   * them.
+   */
+  let pending: TestFailure[] = []
+  for (const line of lines) {
+    if (line === CARGO_FAILURES_HEADER) {
+      inBlock = true
+      pending = []
+      continue
+    }
+    if (inBlock) {
+      const trimmed = line.trim()
+      if (trimmed === '') continue
+      if (line.startsWith('    ') && !trimmed.startsWith('----')) {
+        pending.push({ file, name: trimmed, didNotComplete: false })
+        continue
+      }
+      // A `---- <name> stdout ----` line opens the failure bodies; anything
+      // else ends the list.
+      inBlock = false
+    }
+    const summary = CARGO_RESULT_RE.exec(line)
+    if (summary !== null) {
+      const groups = summary.groups ?? {}
+      // One cargo invocation runs several test binaries, so the totals are a
+      // sum over targets; `ignored` is the other reporters' skipped.
+      const running: TestCounts = counts ?? { passed: 0, failed: 0, skipped: 0 }
+      counts = {
+        passed: running.passed + Number(groups['passed'] ?? 0),
+        failed: running.failed + Number(groups['failed'] ?? 0),
+        skipped: running.skipped + Number(groups['ignored'] ?? 0),
+      }
+      // Last one wins: it is the last word cargo had about the run.
+      verdict = groups['verdict'] === 'FAILED' ? 'failed' : 'passed'
+      block.push(...pending)
+      pending = []
+      continue
+    }
+    if (CARGO_DOCTEST_RE.test(line)) {
+      // `Doc-tests <crate>` names no file, and the previous target's is not it.
+      file = null
+      continue
+    }
+    const target = CARGO_TARGET_RE.exec(line)
+    if (target !== null) {
+      const named = (target.groups?.['target'] ?? '').trim()
+      file = named.startsWith(CARGO_UNITTESTS_PREFIX)
+        ? named.slice(CARGO_UNITTESTS_PREFIX.length).trim()
+        : named
+      continue
+    }
+    const test = CARGO_TEST_RE.exec(line)
+    if (test !== null) {
+      if (test.groups?.['outcome'] === 'FAILED') {
+        failures.push({ file, name: (test.groups?.['name'] ?? '').trim(), didNotComplete: false })
+      }
+      continue
+    }
+    const quiet = CARGO_QUIET_FAILED_RE.exec(line)
+    if (quiet !== null) {
+      failures.push({ file, name: (quiet.groups?.['name'] ?? '').trim(), didNotComplete: false })
+      continue
+    }
+    if (CARGO_ERROR_MARKERS.some((marker) => line.startsWith(marker))) {
+      cargoSaidError = true
+    }
+  }
+
+  if (cargoSaidError && verdict !== 'failed') verdict = 'failed'
+  result.failures = attachPaths(failures, block)
+  result.counts = counts
+  result.summary = summarizeTestRun(counts, verdict)
+  return result
+}
+
+/**
  * The digest for a job, whichever runner produced its log.
  *
- * Two runners are read — `flutter test`/`dart test`, and vitest. What a command
- * *is* decides the parser, except for `run <script>`: the script name is the
- * project's own word for what it runs, so there the log content is the only
- * evidence. Anything else has no digest at all.
+ * Three runners are read — `flutter test`/`dart test`, `cargo test`, and vitest.
+ * What a command *is* decides the parser, except for `run <script>`: the script
+ * name is the project's own word for what it runs, so there the log content is
+ * the only evidence. Anything else has no digest at all.
  */
 export function analyzeTestLog(argv: readonly string[], logPath: string): TestLogDigest {
   if (isTestRun(argv)) return parseFlutterLog(logPath)
+  if (isCargoTestRun(argv)) return parseCargoLog(logPath)
   if (isVitestRun(argv) || (mightRunVitest(argv) && looksLikeVitest(logPath))) {
     return parseVitestLog(logPath)
   }

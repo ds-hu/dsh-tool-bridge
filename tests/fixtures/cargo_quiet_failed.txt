@@ -1,0 +1,22 @@
+
+running 4 tests
+i.. 3/4
+tests::it_fails --- FAILED
+
+failures:
+
+---- tests::it_fails stdout ----
+
+thread 'tests::it_fails' (25180) panicked at src\lib.rs:23:9:
+assertion `left == right` failed
+  left: 4
+ right: 5
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::it_fails
+
+test result: FAILED. 2 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

@@ -482,3 +482,124 @@ describe('digest primitives', () => {
     })
   })
 })
+
+/**
+ * `cargo test`, whose logs are libtest's per-target blocks.
+ *
+ * The fixtures are real runs of a two-target crate (a `src/lib.rs` unit test
+ * binary plus a `tests/integration.rs` file plus the doc-test target), captured
+ * through `cargo test` on this machine — including the two shapes that are easy
+ * to get wrong: `--quiet`, which writes no per-test progress lines at all, and a
+ * mixed run, where the last `test result:` line belongs to a *green* target while
+ * the run exited 101.
+ */
+describe('cargo test digest (CargoDigestTests)', () => {
+  const CARGO_TEST = ['cargo', 'test']
+  const digest = (name: string) => analyzeTestLog(CARGO_TEST, fixture(name))
+
+  it('sums the counts over every target, and reads ignored as skipped', () => {
+    const result = digest('cargo_passed.txt')
+    expect(result.flavor).toBe('cargo')
+    // Unit tests (2 passed, 1 ignored) + the integration file (1 passed) + the
+    // doc-test target (0).
+    expect(result.counts).toEqual({ passed: 3, skipped: 1, failed: 0 })
+    expect(result.summary).toBe('3 passed, 1 skipped')
+    expect(result.failures).toEqual([])
+  })
+
+  it('reports the failure inventory with the target file it came from', () => {
+    const result = digest('cargo_failed.txt')
+    expect(result.counts).toEqual({ passed: 2, skipped: 1, failed: 1 })
+    expect(result.summary).toBe('2 passed, 1 failed')
+    expect(result.failures).toEqual([
+      { file: 'src\\lib.rs', name: 'tests::it_fails', didNotComplete: false },
+    ])
+  })
+
+  it('reads the quiet reporter, which writes no per-test progress lines', () => {
+    // Measured: `cargo test --quiet` prints `tests::it_fails --- FAILED` and no
+    // `test … ok` list, so a parser anchored on the default shape answers "no
+    // failures" for a run that exited 101.
+    const result = digest('cargo_quiet_failed.txt')
+    expect(result.counts).toEqual({ passed: 2, skipped: 1, failed: 1 })
+    expect(result.summary).toBe('2 passed, 1 failed')
+    expect(result.failures.map((failure) => failure.name)).toEqual(['tests::it_fails'])
+  })
+
+  it('does not read a failing test\'s own output as libtest\'s block', () => {
+    // `---- <name> stdout ----` prints the test's own text at column 0, so a test
+    // that prints `failures:` and an indented list looks exactly like the
+    // summary block. The block is committed only when the `test result:` line it
+    // summarises arrives, which is what keeps the test's text out of the
+    // inventory.
+    const log = scratchLog(
+      'cargo_body_noise.txt',
+      [
+        '     Running unittests src\\main.rs (target\\debug\\deps\\probe.exe)',
+        '',
+        'running 2 tests',
+        'test talks::about_failures ... FAILED',
+        'test talks::quiet ... ok',
+        '',
+        'failures:',
+        '',
+        '---- talks::about_failures stdout ----',
+        '',
+        'failures:',
+        '    not-a-test-name',
+        '',
+        'failures:',
+        '    talks::about_failures',
+        '',
+        'test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s',
+        '',
+        'error: test failed, to rerun pass `--lib`',
+        '',
+      ].join('\n'),
+    )
+    const result = analyzeTestLog(CARGO_TEST, log)
+    expect(result.failures).toEqual([
+      { file: 'src\\main.rs', name: 'talks::about_failures', didNotComplete: false },
+    ])
+    expect(result.counts).toEqual({ passed: 1, skipped: 0, failed: 1 })
+  })
+
+  it('does not read a later green target as the run', () => {
+    // `--no-fail-fast` runs every target, so the doc-test target's
+    // `test result: ok.` is the log's last result line while the run is red —
+    // ADR-0011's false green, one runner over. cargo's own `error: test failed`
+    // is what keeps the verdict red.
+    const result = digest('cargo_mixed_failed.txt')
+    expect(result.counts).toEqual({ passed: 3, skipped: 1, failed: 1 })
+    expect(result.summary).toBe('3 passed, 1 failed')
+    expect(result.failures).toEqual([
+      { file: 'tests\\integration.rs', name: 'integration_fails', didNotComplete: false },
+    ])
+  })
+
+  it('claims no counts when nothing compiled', () => {
+    const result = digest('cargo_compile_error.txt')
+    expect(result.flavor).toBe('cargo')
+    expect(result.counts).toBeNull()
+    // Not "0 passed": no target ever reached libtest, so there is no total to
+    // state and the log is the answer.
+    expect(result.summary).toBe('see log')
+    expect(result.failures).toEqual([])
+  })
+
+  it('is the digest for `cargo test` only', () => {
+    expect(analyzeTestLog(['cargo', 'build'], fixture('cargo_passed.txt')).flavor).toBeNull()
+    expect(analyzeTestLog(['cargo', 'run'], fixture('cargo_failed.txt')).counts).toBeNull()
+    // And a cargo-test digest is not invented for a log another runner wrote.
+    expect(analyzeTestLog(CARGO_TEST, fixture('vitest_passing.txt')).counts).toBeNull()
+  })
+
+  it('returns an empty digest for an unreadable cargo log', () => {
+    expect(analyzeTestLog(CARGO_TEST, fixture('does-not-exist.log'))).toEqual({
+      flavor: 'cargo',
+      summary: null,
+      counts: null,
+      failures: [],
+    })
+  })
+})

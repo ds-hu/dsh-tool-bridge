@@ -18,7 +18,7 @@
 export const SCRIPT_BINARIES = new Set(['vite', 'vitest', 'svelte-check', 'svelte-kit', 'tsc'])
 
 export const ALLOWED_EXES = new Set([
-  'flutter', 'dart', 'git', 'npm', 'npx', 'pnpm', 'gradlew', ...SCRIPT_BINARIES,
+  'flutter', 'dart', 'git', 'npm', 'npx', 'pnpm', 'gradlew', 'cargo', ...SCRIPT_BINARIES,
 ])
 
 /**
@@ -157,6 +157,11 @@ export const PACKAGE_MANAGER_WHOLE_WORKSPACE_FLAGS: ReadonlySet<string> = new Se
 export const PACKAGE_MANAGER_SELECTOR_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
   npm: new Set(['-w', '--workspace']),
   pnpm: new Set(['--filter', '-F']),
+  // cargo's `-p`/`--package` picks one member of a workspace, which is the same
+  // concept the other two spell their own way. Its `-F` is *not* one: that is
+  // `--features`, so the second manager's `-F` and cargo's `-F` are two flags —
+  // the `-w` collision in `PACKAGE_MANAGER_BLOCKED_FLAGS` one toolchain over.
+  cargo: new Set(['-p', '--package']),
 }
 
 /**
@@ -234,6 +239,130 @@ export const GRADLE_RESERVED_PROPERTY_PREFIX = 'org.gradle.'
  * path.
  */
 export const GRADLE_PROJECT_DIR_FLAGS = new Set(['-p', '--project-dir'])
+
+/**
+ * CARGO_VERBS — the cargo verbs this surface accepts, **by name**.
+ *
+ * An allow list, where `gradlew` has a deny list over an unbounded verb space,
+ * and the difference is a fact about the two tools rather than a preference:
+ * Gradle task names are the project's own and cannot be enumerated, while
+ * cargo's subcommands can — so the list is expressible, and an expressible list
+ * is what makes "which verbs may touch what" answerable at all.
+ *
+ * It cannot be "any subcommand" (the terms `flutter`/`dart` are accepted on),
+ * for one measured reason: cargo **dispatches**. `cargo <name>` looks for
+ * `cargo-<name>.exe` on PATH and runs it, so an unfiltered verb space is general
+ * execution behind an allowlisted name — the thing `pnpm exec` and `gradlew -I`
+ * are narrowed against (ADR-0001, ADR-0004). Measured on this machine,
+ * `%USERPROFILE%\.cargo\bin` carries `cargo-binstall.exe` (26 MB) and
+ * `cargo-install-update.exe` (4 MB) beside rustup's own shims, so the dispatcher
+ * really does reach third-party programs.
+ *
+ * Two members are external subcommands shipped **with** the toolchain
+ * (`cargo-clippy.exe`, `cargo-fmt.exe`), accepted by name like a **Script
+ * binary**. Provenance cannot be the rule for them: rustup's shims and
+ * `cargo install`'s binaries share one directory on PATH, so "the toolchain's
+ * own" is not a property the filesystem distinguishes — only the name is.
+ *
+ * What is on it: build and check (`build`, `check`, `test`, `bench`, `doc`),
+ * run (`run` — arbitrary code, the same terms `dart run` is accepted on), the
+ * toolchain's own formatter and linter, and the dependency verbs, because
+ * **resolving a crate is the one thing cargo cannot do inside the file
+ * sandbox**: measured, `cargo fetch` dies there with
+ * `schannel: AcquireCredentialsHandle failed: SEC_E_NO_CREDENTIALS` while the
+ * same command outside it exits 0 and fills the registry cache (ADR-0015).
+ * `clean` is in because it removes `target/` only: derived output, reproducible
+ * by rebuilding, so it is not **Destructive** by the glossary's definition —
+ * the cost is an hour of compilation, not lost work.
+ */
+export const CARGO_VERBS = new Set([
+  'add', 'bench', 'build', 'check', 'clean', 'clippy', 'doc', 'fetch', 'fix',
+  'fmt', 'generate-lockfile', 'metadata', 'remove', 'rm', 'run', 'test', 'tree',
+  'update',
+])
+
+/**
+ * Why a cargo verb is refused, keyed by the verb — the `GRADLE_FLAG_REASONS`
+ * pairing one toolchain over, and the refusal *is* the model's feedback.
+ *
+ * Three families: machine state outside the project (`install`/`uninstall`
+ * write the user's cargo bin directory, `login`/`logout` store a token there,
+ * `publish`/`yank`/`owner` change crates.io irreversibly), scaffolding that can
+ * name a path outside the pinned working directory (`new`/`init`), and the
+ * compiler reached around cargo (`rustc`/`rustdoc` take arbitrary flags, the
+ * redirection `-D` is refused for on the gradlew surface).
+ */
+export const CARGO_VERB_REASONS: Readonly<Record<string, string>> = {
+  install: "it installs into the machine's cargo bin directory (%USERPROFILE%\\.cargo\\bin) — shared state outside the pinned project, and the same directory rustup's own shims live in",
+  uninstall: "it removes a binary from the machine's cargo bin directory — shared state outside the pinned project",
+  publish: 'it uploads to crates.io, and a published version cannot be withdrawn',
+  yank: 'it changes what every other project resolves from crates.io',
+  owner: "it changes who may publish a crate — remote state this surface cannot show or undo",
+  login: 'it stores a crates.io token on this machine, and the bridge holds no credential store',
+  logout: 'it removes the machine-wide crates.io token the developer\'s own cargo uses',
+  new: 'it scaffolds a project, and its path argument may point outside the pinned working directory — a file the sandbox owns, not this surface',
+  init: 'it scaffolds a project in a directory it did not have to stay inside',
+  vendor: "it writes a vendor tree and rewrites the project's .cargo/config.toml to match",
+  package: 'it builds a distributable archive — a release step, not a build',
+  rustc: 'it is the compiler with arbitrary extra flags passed after `--` — the machine-level redirection `-D` is refused for on the gradlew surface, and this is the same shape one toolchain over',
+  rustdoc: 'it is the documentation compiler with arbitrary extra flags passed after `--` — the same redirection `rustc` is refused for',
+}
+
+/**
+ * Flags refused on every cargo verb, with the reason.
+ *
+ * Two families again. **Anchor redirection**: `--target-dir` writes build output
+ * outside the pinned working directory (the `--project-cache-dir` refusal one
+ * toolchain over), and `--config` injects arbitrary Cargo configuration —
+ * `build.rustc-wrapper` and `target.*.runner` in that configuration run a
+ * program of the caller's choosing, which is exactly why `gradlew -I` is
+ * refused. The project's own `.cargo/config.toml` is the supported home for
+ * both, the same way `gradle.properties` is for `-D`.
+ *
+ * **Whole-workspace spellings**: `--workspace`/`--all` widen one invocation to
+ * every member (the package managers refuse the same), and `--exclude` means
+ * every member *except* the one named — the `!`-selector refusal. With
+ * `--workspace` refused it has no other use.
+ *
+ * `-Z` is the unstable-behaviour switch (`-Zbuild-std`, `-Zscript`,
+ * `-Zconfig-include`): configuration that is not an argv flag on this surface,
+ * matched as a short flag so every attached spelling is caught.
+ */
+export const CARGO_FLAG_REASONS: Readonly<Record<string, string>> = {
+  '--target-dir': 'it puts the build output outside the pinned working directory; a project that wants another target directory has build.target-dir in its own .cargo/config.toml',
+  '--config': "it injects arbitrary Cargo configuration, and build.rustc-wrapper / target.*.runner in that configuration run a program of the caller's choosing — the narrowing gradlew -I/--init-script gets",
+  '-Z': 'it is the unstable-behaviour switch (build-std, script, config-include) — configuration this surface does not accept as an argv flag',
+  '--workspace': 'it widens one invocation to every workspace member — the whole-workspace spelling the package managers refuse',
+  '--all': 'it is the older spelling of --workspace — one invocation writing into every member',
+  '--exclude': 'it means every member except the one named, the same reason a ! selector is refused; with --workspace refused it has no other use',
+}
+
+/** The flags `validateCargo` refuses; the reasons live one map up. */
+export const CARGO_BLOCKED_FLAGS = new Set(Object.keys(CARGO_FLAG_REASONS))
+
+/**
+ * The cargo flag that names the manifest a job builds, **guarded** rather than
+ * refused.
+ *
+ * The `gradlew -p` precedent (ADR-0013): a layout whose crate is not the
+ * directory the session sits in would otherwise be a dead end, and the cwd is
+ * fixed at submit time (ADR-0002). A *relative* path keeps the job inside the
+ * pinned working directory, and it has a second effect worth naming — it is the
+ * only thing that stops cargo's own upward search for `Cargo.toml`, so a job
+ * that names it builds exactly the project the caller named and not an ancestor.
+ */
+export const CARGO_MANIFEST_FLAGS = new Set(['--manifest-path'])
+
+/**
+ * The rustup toolchain selector, refused where it would be cargo's first
+ * argument (`cargo +nightly test`).
+ *
+ * The toolchain is machine configuration — `rustup default`, or
+ * `RUSTUP_TOOLCHAIN` in the environment — the same posture `JAVA_HOME` is held
+ * to on the gradlew surface. A per-request toolchain would also mix artifacts:
+ * every toolchain shares one `target/` directory.
+ */
+export const CARGO_TOOLCHAIN_PREFIX = '+'
 
 /** The two lanes a job may run on. */
 export const LANE_QUEUE = 'queue'

@@ -4,9 +4,10 @@
 
 A **DSH plugin** that gives a file-sandboxed session the toolchain its sandbox
 denies — `flutter`/`dart`, the project's own Node tools, a guard-railed `git`,
-`pnpm`/`npm` — as two native tools, one switch per conversation, and a sidebar
-panel. The browser half of a UI walkthrough (`@playwright/mcp`) is mounted the
-same way: per conversation, for the conversations that ask.
+`pnpm`/`npm`, a verb-guarded `cargo` — as two native tools, one switch per
+conversation, and a sidebar panel. The browser half of a UI walkthrough
+(`@playwright/mcp`) is mounted the same way: per conversation, for the
+conversations that ask.
 
 It is the successor of a Python HTTP server that did the same job beside the
 harness. `docs/adr/0007-the-plugin-is-the-bridge.md` records why the plugin is
@@ -22,6 +23,15 @@ git directory lives outside the workspace, and a Node toolchain dies on
 stdio, which is what takes down `vite` (its Windows `net use` probe), `vitest`'s
 default forks pool and `esbuild`
 (`docs/vite-vitest-sandbox-findings.md` records the measurements).
+
+`cargo` is the narrower case, and worth stating exactly: it **builds** inside the
+sandbox once its crates are on disk — measured, `cargo build` finished in 4.05 s
+in `workspace-write`, `rustc` children and all — and the one thing it cannot do
+there is reach crates.io: `cargo fetch` retried three times and died with
+`schannel: AcquireCredentialsHandle failed: SEC_E_NO_CREDENTIALS`, because a
+confined child runs under a low-integrity token that cannot acquire a TLS
+credential. So the bridge is where a Rust project resolves its dependencies
+(ADR-0015).
 
 The sandbox is applied **per capability call**: `ctx.sandbox.confine()` wraps the
 argv a consumer is about to spawn. The harness process itself is not confined,
@@ -120,12 +130,13 @@ a patch override in the profile — and a patch replaces the targeted row's whol
 ## Using it
 
 `bridge_run` is the front door. The accepted names are `flutter`, `dart`, `git`,
-`pnpm`, `npm`, `npx`, `gradlew`, and the project's own `vite`/`vitest`/
+`pnpm`, `npm`, `npx`, `gradlew`, `cargo`, and the project's own `vite`/`vitest`/
 `svelte-check`/`svelte-kit`/`tsc`, resolved out of the job's working directory —
-the Node tools by reading the package's `bin` field, and `gradlew` through its
-`gradle/wrapper/gradle-wrapper.jar` — never through a `.cmd`/`.bat` wrapper,
-which would put `cmd.exe` in the middle of an argv that is supposed to have no
-shell.
+the Node tools by reading the package's `bin` field, `cargo` straight off `PATH`
+(rustup installs a real `cargo.exe`, so there is no wrapper to unwrap) and
+`gradlew` through its `gradle/wrapper/gradle-wrapper.jar` — never through a
+`.cmd`/`.bat` wrapper, which would put `cmd.exe` in the middle of an argv that is
+supposed to have no shell.
 
 **Gradle builds go through the wrapper jar.** `gradlew` runs as
 `java -classpath <project>/gradle/wrapper/gradle-wrapper.jar
@@ -142,6 +153,31 @@ an anchor or open execution — `-g`/`--gradle-user-home`, `--project-cache-dir`
 `--daemon`, `-t`/`--continuous`, `--stop`/`--status` — plus `-P`/`--project-prop`
 keys under `org.gradle.`, while project properties like
 `-PreactNativeArchitectures=x86_64` pass through.
+
+**Cargo verbs are named, and dependency resolution is why it is here.**
+`cargo <name>` looks for `cargo-<name>.exe` on `PATH` and runs it, so an
+unfiltered verb space would be general execution behind an allowlisted name — the
+reason `pnpm exec` is narrowed. Accepted: `build`, `check`, `test`, `bench`,
+`doc`, `run`, `clean`, `fix`, `clippy`, `fmt`, `generate-lockfile`, and the
+dependency verbs `fetch`, `update`, `add`, `remove`/`rm`, `tree`, `metadata`.
+`clippy` and `fmt` are themselves `cargo-*.exe` subcommands and are accepted **by
+name** because they ship with the toolchain — provenance cannot decide it:
+measured, rustup's shims and `cargo install`'s binaries (`cargo-binstall.exe`,
+26 MB) share the one directory on `PATH`. Refused: the verbs that touch machine
+state or crates.io (`install`/`uninstall` write `%USERPROFILE%\.cargo\bin`,
+`publish`/`yank`/`owner`/`login`/`logout` change a remote or store a token),
+scaffolding that can name a path outside the pinned cwd (`new`/`init`, `vendor`,
+`package`), the compiler reached around cargo (`rustc`/`rustdoc`), every unlisted
+name (`cargo nextest`), the anchor flags `--target-dir`/`--config`/`-Z`, the
+whole-workspace spellings `--workspace`/`--all`/`--exclude`, and
+`cargo +<toolchain>` — the toolchain is machine configuration (`rustup default`,
+`RUSTUP_TOOLCHAIN`), and every toolchain shares one `target/`. `-p`/`--package`
+is a **Workspace selector** (a path-shaped value is held to the literal-path
+rules), and `--manifest-path` is **guarded** the way `gradlew -p` is: a relative
+path inside the pinned cwd, which is also the only thing that stops cargo's own
+upward search for `Cargo.toml`. `cargo clean` is allowed because it removes
+`target/` only. A `cargo run` that serves is *not* guessed onto the long lane —
+pass `long: true`.
 
 **Workspace scripts run on either side of the verb.** `pnpm --filter <pkg> run
 test` and `npm -w <pkg> run build` are accepted, because a selector picks a
@@ -205,12 +241,13 @@ resolved through the package config, which a formatter pin cannot align.
 
 **Scoping to your uncommitted files.** `scope: "uncommitted"` reads the working
 tree once, at submit time, and narrows the command to its uncommitted `.dart`
-files. For `dart format` that is an **Expansion** — the files are appended to
-argv, so the formatter itself is narrowed, which is CI's changed-files check run
-locally. For `analyze`/`fix` no argv can name a file list (an analyzer takes at
-most one directory), so the same set narrows the returned lines instead and the
-exit code still covers the whole project: a **Filter**. Nothing uncommitted is a
-refusal, not a whole-tree format.
+files — the scope is Dart's by construction, and `cargo fmt`/`clippy` take no
+file list, so there is no Rust scope (ADR-0015). For `dart format` that is an
+**Expansion** — the files are appended to argv, so the formatter itself is
+narrowed, which is CI's changed-files check run locally. For `analyze`/`fix` no
+argv can name a file list (an analyzer takes at most one directory), so the same
+set narrows the returned lines instead and the exit code still covers the whole
+project: a **Filter**. Nothing uncommitted is a refusal, not a whole-tree format.
 
 **Timeouts never kill.** `timeoutSec` bounds how long the *call* waits for queue
 time plus run time; when it expires the job is unchanged and still running. Read
@@ -264,6 +301,10 @@ plugin does per conversation is in the switch the human can see and turn off.
   port states the platform instead of carrying an untested claim.
 - **Node 22+** for the plugin, and `node` on `PATH` for a script binary.
 - `flutter`/`dart`, `git`, and whichever package manager your project names.
+- A Rust toolchain — `cargo` on `PATH`, as rustup installs it — when you run
+  `cargo`. The bridge uses the machine's own `%USERPROFILE%\.cargo`: the registry
+  cache and its credentials stay where your own builds keep them, which is also
+  how a job reaches crates.io at all.
 - `JAVA_HOME` pointing at a JDK when you run `gradlew` — the wrapper's JVM comes
   from there and never from `PATH`.
 - A harness whose `@deepseek-ai/*` line matches the peers in `package.json`
@@ -317,7 +358,8 @@ Two sandbox facts shape the loop, both measured:
   the long lane (0004); the browser belongs to Playwright MCP, now mounted per
   conversation (0005, amended); npm is a package manager on the same terms
   (0006); **the plugin is the bridge** (0007); **the git surface carries fetch,
-  rebase, cherry-pick and a named push** (0014).
+  rebase, cherry-pick and a named push** (0014); **cargo joins as a verb-guarded
+  build tool, and dependency resolution is its reason** (0015).
 - `docs/vite-vitest-sandbox-findings.md` — the measurements behind the Node
   surface: which commands the sandbox kills, with what error, and why.
 - `CHANGELOG.md` — what each released version changed, and why; the entries are
@@ -336,6 +378,12 @@ session's, ADR-0002) and per-request worktrees; the whole-workspace runs
 (`--workspaces`, `-ws`, `--include-workspace-root`, pnpm's `-w`) and the
 unnarrowed package-manager forms (`pnpm dlx`, `npm link`/`unlink`/`publish`/
 `config`/`store`) and an exec-form target that is not a project script binary;
+the cargo verbs that touch machine state or crates.io (`install`/`uninstall`,
+`publish`, `yank`, `owner`, `login`/`logout`), cargo scaffolding (`new`, `init`,
+`vendor`, `package`), the compiler reached around cargo (`rustc`/`rustdoc`), an
+unlisted `cargo-<name>` helper such as `nextest`, cargo's `--target-dir`/
+`--config`/`-Z`/`--workspace`/`--all`/`--exclude` and `cargo +<toolchain>`, and a
+Rust `uncommitted` scope;
 guessing a project's package manager from its lockfile (the lockfile is advisory,
 the caller names the manager); any raw `node` or `python` executable name (the
 guardrail is a list of names, ADR-0001); a per-request formatter override (the

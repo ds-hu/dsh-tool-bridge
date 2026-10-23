@@ -598,3 +598,53 @@ describe('npm launch', () => {
     expect(nodeEntryFromShim(wrapper)).toBeNull()
   })
 })
+
+/**
+ * `cargo` needs no launcher slice at all, and that is the claim these cases make.
+ *
+ * rustup installs `cargo.exe` as a real executable in `~\.cargo\bin` (a shim, but
+ * an `.exe` CreateProcess can start), so a cargo job falls through to the generic
+ * "which finds it, run it" branch — no `.cmd` to unwrap, no `node`, no JVM. The
+ * point of asserting it is that the next reader can see *why* `resolve.ts` has no
+ * cargo branch, rather than guessing that one was forgotten.
+ */
+describe('cargo launch', () => {
+  const CARGO = 'C:\\Users\\me\\.cargo\\bin\\cargo.exe'
+
+  it('launches cargo.exe as it is: no wrapper, no node, no JVM', () => {
+    const which: WhichFn = (name) => {
+      if (name === 'cargo') return CARGO
+      throw new Error(`a cargo job must not consult PATH for ${name}`)
+    }
+    // `javaHome` null on purpose: a cargo job needs no JAVA_HOME, and asking for
+    // one would make every Rust build fail on a machine without a JDK.
+    const launch = resolveLaunch(['cargo', 'fetch'], null, null, which, null)
+    expect(launch.argv).toEqual([CARGO, 'fetch'])
+    expect(launch.env).toEqual({})
+  })
+
+  it('never puts a shell in the argv', () => {
+    const launch = resolveLaunch(
+      ['cargo', 'build', '--release'],
+      null,
+      null,
+      patchedWhich({ cargo: CARGO }),
+      null,
+    )
+    expect(launch.argv.some((token) => /\.(bat|cmd)$/iu.test(token))).toBe(false)
+  })
+
+  it('fails when cargo is not on PATH', () => {
+    expect(() => resolveLaunch(['cargo', 'build'], null, null, patchedWhich({}), null)).toThrow(
+      /executable not found on PATH: cargo/u,
+    )
+  })
+
+  it('does not guess `cargo run` onto the long lane', () => {
+    // The caller says so with `long: true`: a `cargo run` is a server often
+    // enough to matter, and never certainly enough to guess — the same call
+    // `flutter run` and `dart run` are left to the caller for.
+    expect(wantsLongLane('cargo', ['run'])).toBe(false)
+    expect(wantsLongLane('cargo', ['test'])).toBe(false)
+  })
+})

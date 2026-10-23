@@ -4,6 +4,55 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`cargo`, as a verb-guarded build tool** (ADR-0015). The reason is narrower
+  than the other toolchains and worth stating exactly: measured, `cargo build`
+  with its crates already on disk finishes inside `workspace-write` (4.05 s,
+  `rustc` children included), while `cargo fetch` there retries three times and
+  dies with `schannel: AcquireCredentialsHandle failed:
+  SEC_E_NO_CREDENTIALS` — a confined child runs under a low-integrity token and
+  cannot acquire a TLS credential. So the bridge is where a Rust project resolves
+  its dependencies. Accepted verbs: `build`, `check`, `test`, `bench`, `doc`,
+  `run`, `clean`, `fix`, `clippy`, `fmt`, `generate-lockfile`, `fetch`, `update`,
+  `add`, `remove`/`rm`, `tree`, `metadata`. It is an **allow list** because cargo
+  dispatches an unknown name to `cargo-<name>.exe` on `PATH` (measured on this
+  machine: `cargo-binstall.exe`, 26 MB, beside rustup's shims), so `clippy`/`fmt`
+  are admitted **by name** — provenance cannot separate them from an installed
+  helper in the same directory. Refused: `install`/`uninstall` (they write
+  `%USERPROFILE%\.cargo\bin`), `publish`/`yank`/`owner`/`login`/`logout`,
+  `new`/`init`/`vendor`/`package`, `rustc`/`rustdoc`, every unlisted name,
+  `--target-dir`, `--config`, `-Z`, `--workspace`/`--all`/`--exclude`, and
+  `cargo +<toolchain>`. `-p`/`--package` is a **Workspace selector** (path-shaped
+  values go through the literal-path rules) and `--manifest-path` is **guarded**
+  like `gradlew -p` — a relative path inside the pinned cwd, which is also the
+  only thing that stops cargo's upward search for `Cargo.toml`. `cargo clean` is
+  allowed: it removes `target/` only.
+- **A third digest flavor, `cargo`.** `cargo test` logs are libtest's per-target
+  blocks, so counts are summed over every `test result:` line, `ignored` reads as
+  `skipped`, and the `Running …` line names the file a failure came from. Both
+  measured traps are fixtures: `--quiet` writes `tests::it_fails --- FAILED` and
+  no per-test progress lines at all, and a mixed `--no-fail-fast` run ends with a
+  *green* target's `test result: ok.` after the red one — cargo's own
+  `error: test failed` is what keeps the verdict red (ADR-0011, one runner over).
+  A compile error claims no counts at all rather than "0 passed".
+- `CARGO_TERM_COLOR=never` rides on every job: cargo ignores `NO_COLOR`, and the
+  log file is read by a human as well as by the digest.
+
+### Changed
+
+- `bridge_run`'s description teaches the cargo surface it now accepts, including
+  that `cargo run` is **not** guessed onto the long lane (pass `long: true`) and
+  that `clippy`/`fmt` are external subcommands accepted by name.
+- `vitest.config.ts` states the suite's timeout once, at 30 s. Spawning a child
+  process costs seconds on an ACL-heavy Windows workspace, and several cases here
+  start real ones (`git`, `cargo`): measured, `scope.spec`'s real-repository case
+  takes 5.8 s alone and 17.5 s under load, and `bridge-output.spec`'s job cases
+  range from 2 s to 5 s. The 5 s default turned that into timeouts that read as
+  failures of the code under test.
+
 ## [0.1.1] - 2026-10-23
 
 The first release whose repository carries the built `lib/`, which is what a git

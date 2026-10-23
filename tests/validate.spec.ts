@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { RefusalError } from '../src/engine/errors'
-import { GIT_FLAG_REASONS, GRADLE_BLOCKED_FLAGS, SCRIPT_BINARIES } from '../src/engine/surface'
+import {
+  CARGO_FLAG_REASONS,
+  CARGO_VERB_REASONS,
+  CARGO_VERBS,
+  GIT_FLAG_REASONS,
+  GRADLE_BLOCKED_FLAGS,
+  SCRIPT_BINARIES,
+} from '../src/engine/surface'
 import { buildArgv, validate } from '../src/engine/validate'
 
 /**
@@ -726,6 +733,184 @@ describe('git write surface (GitWriteSurfaceTests)', () => {
     // A config flag is an argv *before* the verb, and the verb may not be one.
     for (const verb of ['push', 'fetch', 'rebase']) {
       refusal(() => validate(['git', '-c', 'core.sshCommand=sh', verb]))
+    }
+  })
+})
+
+/**
+ * The cargo surface (ADR-0015).
+ *
+ * Three properties carry it, and each is asserted below rather than described:
+ * the verb list is an **allow** list (cargo dispatches an unknown name to
+ * `cargo-<name>.exe` on PATH, so "any subcommand" is general execution), the
+ * anchors are refused or guarded (`--target-dir`, `--config`, `-Z`, the
+ * whole-workspace spellings, `+toolchain`, and a `--manifest-path` that has to
+ * stay inside the pinned working directory), and `-p`/`--package` is a
+ * **Workspace selector** rather than a retarget.
+ */
+describe('cargo surface (CargoSurfaceTests)', () => {
+  const ALLOWED: string[][] = [
+    ['cargo', 'build'],
+    ['cargo', 'build', '--release'],
+    ['cargo', 'build', '--offline'],
+    ['cargo', 'build', '--features', 'serde'],
+    ['cargo', 'check', '--all-features'],
+    ['cargo', 'test'],
+    ['cargo', 'test', '--locked'],
+    ['cargo', 'test', '--', '--test-threads=1'],
+    ['cargo', 'test', '--', '--exact', 'tests::it_works'],
+    ['cargo', 'test', '-p', 'probe'],
+    ['cargo', 'test', '--package=probe'],
+    ['cargo', 'bench', '--no-run'],
+    ['cargo', 'doc', '--no-deps'],
+    ['cargo', 'fix', '--allow-dirty'],
+    // The toolchain's own formatter and linter are external subcommands shipped
+    // with it; they are on the list by name.
+    ['cargo', 'clippy'],
+    ['cargo', 'clippy', '--', '-D', 'warnings'],
+    ['cargo', 'fmt'],
+    ['cargo', 'fmt', '--check'],
+    ['cargo', 'run', '--bin', 'probe', '--', '--help'],
+    // After `--` the tokens are the program's, so a would-be blocked flag there
+    // is nobody's surface but the program's.
+    ['cargo', 'run', '--', '--target-dir', 'out'],
+    ['cargo', 'clean'],
+    // Resolving a crate is the reason cargo is here at all.
+    ['cargo', 'fetch'],
+    ['cargo', 'update', '--offline'],
+    ['cargo', 'add', 'itoa@1'],
+    ['cargo', 'remove', 'itoa'],
+    ['cargo', 'rm', 'itoa'],
+    ['cargo', 'tree'],
+    ['cargo', 'metadata', '--format-version', '1'],
+    ['cargo', 'generate-lockfile'],
+    // A guarded anchor: relative and inside the pinned cwd, like `gradlew -p`.
+    ['cargo', 'build', '--manifest-path', 'crates/foo/Cargo.toml'],
+    ['cargo', 'build', '--manifest-path=Cargo.toml'],
+    ['cargo.exe', 'test'],
+  ]
+
+  // argv -> the fragment its refusal must contain.
+  const REFUSED: ReadonlyArray<readonly [string[], string]> = [
+    [['cargo'], 'needs a verb'],
+    // Verb-first, the package managers' rule: cargo accepts its global flags
+    // after the verb too, so nothing is lost by refusing the other order.
+    [['cargo', '--offline', 'build'], 'needs a verb before flags'],
+    [['cargo', '+nightly', 'test'], 'machine configuration'],
+    // Machine state outside the project.
+    [['cargo', 'install', 'cargo-nextest'], 'cargo bin directory'],
+    [['cargo', 'uninstall', 'probe'], 'cargo bin directory'],
+    [['cargo', 'publish'], 'cannot be withdrawn'],
+    [['cargo', 'yank', 'probe@0.1.0'], 'resolves from crates.io'],
+    [['cargo', 'owner', '--list', 'probe'], 'remote state'],
+    [['cargo', 'login'], 'token'],
+    // Scaffolding that may name a path outside the pinned cwd.
+    [['cargo', 'new', 'probe2'], 'scaffolds a project'],
+    [['cargo', 'init'], 'scaffolds a project'],
+    [['cargo', 'vendor'], 'vendor tree'],
+    [['cargo', 'package'], 'distributable archive'],
+    // The compiler reached around cargo.
+    [['cargo', 'rustc', '--', '-Zunstable-options'], 'compiler with arbitrary extra flags'],
+    [['cargo', 'rustdoc', '--', '--cfg', 'foo'], 'documentation compiler'],
+    // The dispatcher: not on the list, so cargo would run it from PATH.
+    [['cargo', 'nextest', 'run'], 'cargo-<name>.exe'],
+    [['cargo', 'binstall', 'probe'], 'cargo-<name>.exe'],
+    // Anchor redirection.
+    [['cargo', 'build', '--target-dir', 'out'], 'outside the pinned working directory'],
+    [['cargo', 'build', '--target-dir=out'], 'outside the pinned working directory'],
+    [['cargo', 'build', '--config', 'build.rustc-wrapper=evil'], 'build.rustc-wrapper'],
+    [['cargo', 'build', '--config=build.rustc-wrapper=evil'], 'build.rustc-wrapper'],
+    [['cargo', 'build', '-Zbuild-std'], 'unstable-behaviour'],
+    [['cargo', 'test', '-Z', 'script'], 'unstable-behaviour'],
+    // Whole-workspace spellings.
+    [['cargo', 'build', '--workspace'], 'every workspace member'],
+    [['cargo', 'test', '--all'], 'older spelling of --workspace'],
+    [['cargo', 'build', '--exclude', 'probe'], 'every member except the one named'],
+    // The guarded manifest path, held to the literal-path rules.
+    [['cargo', 'build', '--manifest-path', '../other/Cargo.toml'], 'the cargo manifest path'],
+    [['cargo', 'build', '--manifest-path', '..\\other\\Cargo.toml'], 'the cargo manifest path'],
+    [['cargo', 'build', '--manifest-path', 'C:/other/Cargo.toml'], 'the cargo manifest path'],
+    [['cargo', 'build', '--manifest-path', 'crates/*/Cargo.toml'], 'the cargo manifest path'],
+    // The selector, guarded rather than refused.
+    [['cargo', 'test', '-p'], 'needs a workspace selector value'],
+    [['cargo', 'test', '-p', '..'], 'the cargo workspace selector'],
+    [['cargo', 'test', '--package', 'C:\\other'], 'the cargo workspace selector'],
+  ]
+
+  it('allows the documented forms', () => {
+    for (const argv of ALLOWED) {
+      validate([...argv])
+    }
+  })
+
+  it('refuses the forms that reach outside the project or the toolchain', () => {
+    for (const [argv, fragment] of REFUSED) {
+      const message = refusal(() => validate([...argv]))
+      expect(message, `argv=${JSON.stringify(argv)}`).toContain(fragment)
+    }
+  })
+
+  it('names the dispatcher, so an unlisted verb is self-correcting', () => {
+    const message = refusal(() => validate(['cargo', 'nextest', 'run']))
+    expect(message).toContain('cargo-<name>.exe')
+    expect(message).toContain('PATH')
+    // And the surface it does accept, so the caller can pick a verb from it.
+    expect(message).toContain("'build'")
+    expect(message).toContain("'fetch'")
+    expect(message).toContain("'test'")
+  })
+
+  it('says which form to use when the verb follows the flags', () => {
+    const message = refusal(() => validate(['cargo', '--offline', 'build']))
+    expect(message).toContain("'cargo build --offline'")
+  })
+
+  it('refuses every verb in the reason table, with its own reason', () => {
+    // Table-driven, the gradlew pattern: a verb added to the reason table cannot
+    // slip through the guard, and a refusal written without a reason is visible
+    // here rather than reading as the generic "not allowed".
+    const verbs = Object.keys(CARGO_VERB_REASONS).sort()
+    expect(verbs.length).toBeGreaterThan(0)
+    for (const verb of verbs) {
+      const message = refusal(() => validate(['cargo', verb]))
+      expect(message, verb).toContain('cargo verb not allowed')
+      expect(message, verb).toContain(CARGO_VERB_REASONS[verb] as string)
+    }
+  })
+
+  it('refuses every flag in the reason table, with its own reason', () => {
+    const flags = Object.keys(CARGO_FLAG_REASONS).sort()
+    expect(flags.length).toBeGreaterThan(0)
+    for (const flag of flags) {
+      const message = refusal(() => validate(['cargo', 'build', flag]))
+      expect(message, flag).toContain(`cargo flag not allowed: '${flag}'`)
+      expect(message, flag).toContain(CARGO_FLAG_REASONS[flag] as string)
+    }
+  })
+
+  it('does not let the allow list be bypassed by a path or a suffix', () => {
+    // `commandName` is what the tables are read through, so every spelling of
+    // the same command has to meet the same guard.
+    refusal(() => validate(['cargo', 'install', 'x']))
+    refusal(() => validate(['C:\\Users\\me\\.cargo\\bin\\cargo.exe', 'install', 'x']))
+    refusal(() => validate(['cargo.EXE', 'publish']))
+  })
+
+  it('rewrites nothing: a cargo argv is what runs', () => {
+    // No shorthand, no forced flag — unlike `npm test` and `gradlew`, cargo has
+    // no normalisation, so the job JSON and the lane guess read the caller's own
+    // argv.
+    const argv = ['cargo', 'test', '-p', 'probe']
+    validate(argv)
+    expect(argv).toEqual(['cargo', 'test', '-p', 'probe'])
+  })
+
+  it('keeps every listed verb acceptable, so the list is not decoration', () => {
+    // The non-vacuity half of the allow list: every member really is accepted,
+    // which is what makes the refusals above about policy rather than about a
+    // guard that refuses everything.
+    for (const verb of [...CARGO_VERBS].sort()) {
+      validate(['cargo', verb])
     }
   })
 })

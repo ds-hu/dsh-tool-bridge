@@ -1,0 +1,27 @@
+   Compiling probe v0.1.0 (D:\Projects\probe)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.57s
+     Running unittests src\lib.rs (target\debug\deps\probe-ba928952153c679d.exe)
+
+running 4 tests
+test tests::it_is_ignored ... ignored
+test tests::it_works ... ok
+test tests::it_also_works ... ok
+test tests::it_fails ... FAILED
+
+failures:
+
+---- tests::it_fails stdout ----
+
+thread 'tests::it_fails' (7728) panicked at src\lib.rs:23:9:
+assertion `left == right` failed
+  left: 4
+ right: 5
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::it_fails
+
+test result: FAILED. 2 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `--lib`

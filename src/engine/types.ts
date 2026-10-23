@@ -50,9 +50,9 @@ export interface TestCounts {
  * The result of reading a test log.
  *
  * `flavor` names the runner the digest came from (`flutter` for
- * `flutter test`/`dart test`, `vitest` for a vitest run) and is null for
- * everything else — it is what decides whether the known-failure registry
- * applies, since a *passing* run also has a digest.
+ * `flutter test`/`dart test`, `vitest` for a vitest run, `cargo` for
+ * `cargo test`) and is null for everything else — it is what decides whether
+ * the known-failure registry applies, since a *passing* run also has a digest.
  */
 export interface TestLogDigest {
   flavor: string | null
@@ -193,4 +193,4 @@ export interface ArbResult {
 export type ScopeMode = 'expand' | 'filter'
 
 /** The runner a digest came from, as the flavor vocabulary spells it. */
-export type Flavor = 'flutter' | 'vitest'
+export type Flavor = 'flutter' | 'vitest' | 'cargo'

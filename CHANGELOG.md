@@ -4,7 +4,45 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.0] - 2026-10-24
+
+### Added
+
+- **A plugin icon.** `package.json#icon` names `./icon.svg`, and app-boot inlines
+  that file as a `data:` URL into the plugin list's card, so the plugin has its
+  own mark there instead of no mark at all. The rules are app-boot's `iconOf`,
+  and `tests/package.spec.ts` holds them rather than restating them: a relative
+  path inside the package, SVG/PNG/JPEG/WebP, at most 256 KiB, and named in
+  `files` — that last one is what a git install actually reads, and an icon that
+  is not packed leaves the card without one. `icon.svg` is original artwork (a
+  span carrying three tools), committed beside the sources, and it needs no
+  `./icon` export: the harness resolves the declared path against the manifest's
+  own directory.
+
+### Changed
+
+- **The peers are ranges now, not one pinned harness build.** `peerDependencies`
+  named `0.2.0-rc.2` exactly, so a profile on any other build of the same line — a
+  0.2.x patch, or this line's own next release candidate — failed the peer check
+  against a plugin that had not changed. They are now `^0.2.0-rc.2`, and
+  `@deepseek-ai/cordis` is `^4.0.4` instead of `~4.0.4`: the whole 0.2 line, and
+  cordis's 4.x stream (measured: `4.0.5` satisfies, `4.0.5-alpha.2` and `5.0.0` do
+  not). ADR-0005's reason survives the loosening — the registry's default tag for
+  `dsh-mcp-client` is still the old `0.0.1-rc.1` line, which the range excludes.
+- **What a caret does not buy is a prerelease of a later patch**, and the boundary
+  is worth stating because it is where the next harness lands: measured with
+  semver, `^0.2.0-rc.2` admits `0.2.0`, `0.2.0-rc.3`, `0.2.1` and `0.2.5`, and
+  rejects `0.2.1-rc.3` — a prerelease only matches a range carrying a comparator
+  with its own version tuple, so no wildcard spelling helps (`*` rejects it too,
+  as does `>=0.2.0-rc.2`). A 0.2.x final needs no change; an RC of the next patch
+  still widens this range by hand.
+- **`devDependencies` stay pinned at `0.2.0-rc.2`, deliberately.** The range is
+  the consumer's contract; the dev tree is what `pnpm typecheck` and the suite
+  read, so CI keeps one exact resolution instead of whatever npm published that
+  morning. `tests/package.spec.ts` holds the split — a peer specifier that is not
+  a caret range, or a peer missing from the dev tree, fails the suite — and
+  `README.md`, the workflow comment and ADR-0005/0007 now state it instead of
+  "pinned on purpose".
 
 ### Fixed
 
@@ -164,6 +202,7 @@ switch row above the composer, the sidebar panel, the digested test run with
 baseline attribution, the ARB editor, a guard-railed git verb set, the Gradle
 wrapper entry, and the format pin.
 
+[1.2.0]: https://github.com/ds-hu/dsh-tool-bridge/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/ds-hu/dsh-tool-bridge/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ds-hu/dsh-tool-bridge/compare/v0.1.1...v1.0.0
 [0.1.1]: https://github.com/ds-hu/dsh-tool-bridge/compare/v0.1.0...v0.1.1

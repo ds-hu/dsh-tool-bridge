@@ -18,9 +18,10 @@ jobs:
         with:
           node-version: "22"
           cache: pnpm
-      # The plugin's @deepseek-ai/* peers are pinned to the harness line it was
-      # developed against; a floating install would test against a different
-      # harness than the one the types were read from.
+      # The plugin's @deepseek-ai/* peers are ranges, for the profiles that install
+      # it. What is installed *here* is the dev tree, whose versions are pinned in
+      # package.json — so CI typechecks and tests against the one harness build the
+      # types were read from, not whatever was published that morning.
       - run: pnpm install --no-frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm build

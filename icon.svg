@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Tool Bridge">
+  <!-- Original artwork: a bridge span carrying three tools, on a tile. -->
+  <defs>
+    <linearGradient id="tb-tile" x1="4" y1="4" x2="60" y2="60" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0F1B2E"/>
+      <stop offset="0.55" stop-color="#183055"/>
+      <stop offset="1" stop-color="#2E6BD8"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#tb-tile)"/>
+  <!-- The span: deck, arch and hangers. -->
+  <path d="M11 41H53" stroke="#8FD8FF" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M15 41C15 23 49 23 49 41" stroke="#7FE7D0" stroke-width="3.5" stroke-linecap="round" fill="none"/>
+  <path d="M23 41V31.6M32 41V28.6M41 41V31.6" stroke="#7FE7D0" stroke-width="2.5" stroke-linecap="round"/>
+  <!-- The piers. -->
+  <path d="M15 41V51M49 41V51" stroke="#8FD8FF" stroke-width="3.5" stroke-linecap="round"/>
+  <!-- The tools the bridge carries. -->
+  <rect x="22.5" y="44.5" width="5" height="5" rx="1.4" fill="#FFCE6B"/>
+  <rect x="29.5" y="44.5" width="5" height="5" rx="1.4" fill="#FFCE6B"/>
+  <rect x="36.5" y="44.5" width="5" height="5" rx="1.4" fill="#FFCE6B"/>
+</svg>

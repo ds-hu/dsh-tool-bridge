@@ -1,6 +1,7 @@
 # The plugin is the bridge
 
-**Status**: accepted
+**Status**: accepted — amended where the harness coupling was stated as an exact
+pin (see [Amendment](#amendment-the-harness-coupling-is-a-range))
 
 The toolchain server became a plugin, and every property that made the server
 necessary is now a property of where the work runs. The old answer was not merely
@@ -87,6 +88,21 @@ outright; what is worth recording is what replaced everything around them.
   asked it to — at the cost of an orphan holding the elevated access with nobody
   left to read it. That is a real thing given up, and it is given up on purpose. The
   other limit is coupling: the plugin's peers are the harness packages it loads,
-  pinned at the harness version it was built against, so a harness upgrade is a
-  rebuild and reinstall of the plugin rather than a swap of a package that talked
-  over HTTP and therefore cared much less about the version on the other side.
+  on the harness line it was built against, so a new harness line is a rebuild
+  and reinstall of the plugin rather than a swap of a package that talked over
+  HTTP and therefore cared much less about the version on the other side.
+
+## Amendment: the harness coupling is a range
+
+The coupling is real and stays; naming one exact build was more than it required.
+`peerDependencies` said `0.2.0-rc.2`, so a profile on any other build of the same
+line failed the peer check against a plugin that had not changed, and the
+statement above ("a harness upgrade is a rebuild and reinstall") was true of a
+patch release too. The peers are caret ranges now (`^0.2.0-rc.2`, `^4.0.4` for
+`@deepseek-ai/cordis`): a *patch-level* harness upgrade within the line is no
+longer a plugin change, a new minor line still is — which is what the coupling
+actually means, since the types are read from one line's packages.
+
+The dev tree is untouched (`devDependencies` pinned at `0.2.0-rc.2`), so the
+claim here — the plugin is built against one harness line — is still tested
+against one build of it.

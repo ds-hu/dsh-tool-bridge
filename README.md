@@ -313,9 +313,14 @@ plugin does per conversation is in the switch the human can see and turn off.
   how a job reaches crates.io at all.
 - `JAVA_HOME` pointing at a JDK when you run `gradlew` — the wrapper's JVM comes
   from there and never from `PATH`.
-- A harness whose `@deepseek-ai/*` line matches the peers in `package.json`
-  (currently `0.2.0-rc.2`). They are pinned on purpose: the plugin builds against
-  the types of one harness line.
+- A harness on the `@deepseek-ai/*` **0.2 line**. The peers are caret ranges
+  (`^0.2.0-rc.2`, and `^4.0.4` for `@deepseek-ai/cordis`), so any 0.2.x build
+  satisfies them. What a caret does not buy is a **prerelease of a later patch**:
+  measured with semver, `0.2.1-rc.3` satisfies neither `^0.2.0-rc.2` nor any
+  wildcard, because a prerelease only matches a range carrying a comparator with
+  its own version tuple — so that line needs the range widened by hand.
+  `devDependencies` pin `0.2.0-rc.2`, the build the types and the suite are read
+  against.
 
 ## Development
 
@@ -335,6 +340,11 @@ stage `lib/` with the source change — `tests/package.spec.ts` fails if the ent
 points are missing or untracked. (A `prepare` script would be the alternative;
 it costs an `allowBuilds` entry *per resolved commit* in every consuming profile,
 which is why the sibling plugins commit `lib/` instead.)
+
+`icon.svg` is committed for the same reason and a smaller one: `package.json#icon`
+is what the plugin list renders, and app-boot reads that path out of the manifest's
+own directory. It is also in `files`, which is the list the pack applies — an icon
+the pack leaves out is a plugin card without a mark.
 
 The engine under `src/engine/` is pure logic ported from the retired server with
 its test suite — the digest parsers, the known-failure split, the command
@@ -363,7 +373,8 @@ Two sandbox facts shape the loop, both measured:
   workspace selector); a sub-tool is a job (0003, amended); the Node surface and
   the long lane (0004); the browser belongs to Playwright MCP, now mounted per
   conversation (0005, amended); npm is a package manager on the same terms
-  (0006); **the plugin is the bridge** (0007); **the git surface carries fetch,
+  (0006); **the plugin is the bridge** (0007, amended for the peer range);
+  **the git surface carries fetch,
   rebase, cherry-pick and a named push** (0014); **cargo joins as a verb-guarded
   build tool, and dependency resolution is its reason** (0015); **a directory's
   last flip is its project default** (0016).

@@ -3,6 +3,7 @@
   "version": "1.1.0",
   "private": true,
   "description": "Flutter/Dart, Node and Rust toolchains, guard-railed git verbs and ARB edits for a sandboxed DSH session, as native tools with per-conversation toggles and a sidebar panel.",
+  "icon": "./icon.svg",
   "type": "module",
   "license": "MIT",
   "main": "lib/index.js",
@@ -20,6 +21,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "icon.svg",
     "lib/**/*",
     "cordis.patch.yml"
   ],
@@ -36,13 +38,13 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "~4.0.4",
-    "@deepseek-ai/dsh-agent": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-host-webserver": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-jobs": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-mcp-client": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-scope": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-tools": "0.2.0-rc.2"
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/dsh-agent": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-host-webserver": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-jobs": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-mcp-client": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-scope": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "^0.2.0-rc.2"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",

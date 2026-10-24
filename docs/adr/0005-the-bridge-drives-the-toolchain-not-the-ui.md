@@ -1,6 +1,7 @@
 # The bridge drives the toolchain, not the UI
 
-**Status**: accepted
+**Status**: accepted — amended to state the harness requirement as a range (see
+[Amendment](#amendment-the-harness-requirement-is-a-range-not-a-build))
 
 A model asked to verify a UI it just built needs to *look at it and click it* —
 to catch the entry point nobody can reach and the screen that is merely ugly,
@@ -99,14 +100,14 @@ the work this decision declines to do.
   it for the profile's lifetime. The prefix is stable while the discovered set is
   unchanged, so KV-cache reuse survives; dropping a capability from the plugin's
   `caps` is the knob if the cost bites.
-- **The plugin is pinned to the harness's own version, deliberately.** The
+- **The plugin requires the harness's own line, deliberately.** The
   registry's default tag for `@deepseek-ai/dsh-mcp-client` is **`0.0.1-rc.1`** —
   an older line whose peers do not match the harness this plugin is built
   against, and which contains no image-admission code at all — so a bare
   `dsh plugin add @deepseek-ai/dsh-mcp-client` installs a plugin that cannot do
   the one thing this decision depends on, silently. The plugin's own peers
-  therefore name `@deepseek-ai/dsh-mcp-client` at the harness line it was built
-  against, instead of resolving the package by its default tag. Measured on the
+  therefore name `@deepseek-ai/dsh-mcp-client` on the harness line (`^0.2.0-rc.2`,
+  amended), instead of resolving the package by its default tag. Measured on the
   same run: the `msedge` channel launches with no browser download, and
   navigate → snapshot → click-by-ref → screenshot works end to end.
 - **The browser is not a Job, a Lane or a Sub-tool.** It has no log, no digest,
@@ -144,3 +145,24 @@ the work this decision declines to do.
   `integration_test` recipe is an ordinary command through `bridge_run`; the
   experimental flutter-web-plus-vision note (a canvas has no DOM; coordinate
   clicks are the only pointer); and desktop live driving is out.
+
+## Amendment: the harness requirement is a range, not a build
+
+The bullet above asks for *which line* `dsh-mcp-client` resolves from, and every
+build of the harness line carries the image-admission code it depends on. It was
+implemented as an exact pin (`0.2.0-rc.2`), which is a stricter thing than the
+reason needed: it also refused profiles that had moved to another build of the
+same line — a 0.2.x patch, or the line's own next release candidate — failing the
+peer check against a plugin that had not changed. The peers are caret ranges now
+(`^0.2.0-rc.2`; `^4.0.4` for `@deepseek-ai/cordis`), which still exclude the
+registry's `0.0.1-rc.1` default tag, the thing this decision is actually about.
+`devDependencies` stay pinned at `0.2.0-rc.2`: that is the copy the types and the
+suite are read against, so CI tests one known harness rather than the morning's
+publish.
+
+What a caret does not cross is a prerelease of a *later patch*: measured, no
+range spelling admits `0.2.1-rc.3` — not `^0.2.0-rc.2`, not `>=0.2.0-rc.2`, not
+`*` — because a prerelease only matches a range carrying a comparator with its
+own version tuple. A patch line therefore still widens this range by hand, and
+`tests/package.spec.ts` holds the range shape itself (a peer that is not a caret
+range, or is not also a `devDependency`, fails the suite).

@@ -15,16 +15,40 @@
  * *only* when the fact differs from the intent — in red, with the reason, when
  * the mount failed. A row showing "on" over an absent browser would be the one
  * failure mode worth this much comment.
+ *
+ * The second rule is about when the row asks the host at all. The shell keeps
+ * inactive conversations mounted, so this row is drawn once per conversation
+ * that has ever been opened — and the row used to poll `/state` every four
+ * seconds from every one of them. Twenty background conversations meant five
+ * requests per second against the browser's per-origin HTTP/1.1 pool (six
+ * sockets, one spent on the HMR stream), so one slow request stalled the whole
+ * page behind it: the reported 20–90 s WebUI freezes. The read now follows the
+ * shell's own answer to "which conversation is on screen" — the main view
+ * retains one session at a time (`retainedBy.mainView`, the exact fact
+ * `ui-session` and the layout use) — so an inactive row reads once at mount,
+ * stops, and reads once more when it becomes active. `StatePoller` owns that
+ * schedule, the in-flight guard and the abort on teardown.
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, IconCodeOutlineRegular, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 
 import { fetchState, postToggle } from './api'
+import { StatePoller } from './poll'
 import { danger, muted } from './theme'
 import type { SessionView } from './api'
-import type { ToggleState } from './types'
+import type { SessionRetainInfo, ToggleState, UseSessionRetainInfo } from './types'
+
+/** Cadence while this row's conversation is the active one. */
+const POLL_MS = 4000
+
+/**
+ * A shell that does not publish the retain-info hook: keep the old behaviour
+ * (always considered on screen) rather than fail to draw the row. The hook is
+ * optional in the props type for the same reason.
+ */
+const useAlwaysActive: UseSessionRetainInfo = () => true
 
 /** What the registration hands this row. */
 export interface SwitchesInjected {
@@ -34,8 +58,22 @@ export interface SwitchesInjected {
   openPanel: () => void
 }
 
-/** The dock entry's props: the framework runtime face plus what `inject` supplies. */
-export type SwitchesProps = PropsRuntime<'conversation.input.dock'> & InjectFace<SwitchesInjected>
+/**
+ * The dock entry's props: the framework runtime face (which carries the global
+ * standard kit, including the retain-info selector), what `inject` supplies, and
+ * the one standard hook this row reads.
+ */
+export type SwitchesProps =
+  & PropsRuntime<'conversation.input.dock'>
+  & InjectFace<SwitchesInjected>
+  & {
+      /**
+       * The renderer's session-retain selector, handed to every session-scope
+       * entry. The keyed call asks about *this* row's conversation, so the row
+       * never mistakes whichever conversation is live for its own.
+       */
+      useSessionRetainInfo?: UseSessionRetainInfo
+    }
 
 /**
  * Align the row with the composer card, not the viewport.
@@ -123,31 +161,65 @@ function Half({
 
 /**
  * Render the switch row for one conversation.
- * @param props - the framework runtime face and the injected session/panel opener.
+ * @param props - the framework runtime face, the injected session/panel opener, and the retain-info selector.
  */
-export function Switches({ sessionId, openPanel }: SwitchesProps): React.ReactElement | null {
+export function Switches({
+  sessionId,
+  openPanel,
+  useSessionRetainInfo,
+}: SwitchesProps): React.ReactElement | null {
   const [view, setView] = useState<SessionView | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [pending, setPending] = useState<keyof ToggleState | null>(null)
 
-  const refresh = useCallback(async (): Promise<void> => {
-    if (sessionId === '') return
-    const result = await fetchState(sessionId)
-    if (result.ok) {
-      setView(result.value)
-      setFailure(null)
-    } else {
-      setFailure(result.message)
-    }
-  }, [sessionId])
+  // The shell's own activity fact: the main view retains exactly one session at
+  // a time, and it is the conversation the user is looking at. Reading the fact
+  // here (rather than a global "current id" this plugin would have to keep in
+  // sync) is what makes an inactive row stop polling for good.
+  const retain: UseSessionRetainInfo = useSessionRetainInfo ?? useAlwaysActive
+  const active = retain(sessionId, (info: SessionRetainInfo | undefined): boolean =>
+    (info?.retainedBy.mainView ?? 0) > 0,
+  )
+
+  /** Guards a late read from writing into an unmounted row. */
+  const mounted = useRef(true)
+  /** The poller this row owns; replaced when the conversation changes. */
+  const poller = useRef<StatePoller | null>(null)
+  /** The latest activity answer, for effects that must not re-create the poller. */
+  const live = useRef(active)
 
   useEffect(() => {
-    void refresh()
-    // The browser half connects and the lanes move on their own; a slow poll
-    // keeps the row honest without an event stream the host does not have.
-    const timer = setInterval(() => void refresh(), 4000)
-    return () => clearInterval(timer)
-  }, [refresh])
+    live.current = active
+    poller.current?.setActive(active)
+  }, [active])
+
+  useEffect(() => {
+    if (sessionId === '') return undefined
+    mounted.current = true
+    const instance = new StatePoller({
+      activeMs: POLL_MS,
+      read: async (signal) => {
+        const result = await fetchState(sessionId, signal)
+        // Aborted or unmounted: the answer belongs to nobody. The poller's
+        // stop() is what aborts, so this branch is the teardown path.
+        if (!mounted.current || signal.aborted) return
+        if (result.ok) {
+          setView(result.value)
+          setFailure(null)
+        } else {
+          setFailure(result.message)
+        }
+      },
+    })
+    poller.current = instance
+    instance.setActive(live.current)
+    instance.start()
+    return () => {
+      mounted.current = false
+      poller.current = null
+      instance.stop()
+    }
+  }, [sessionId])
 
   const flip = useCallback(
     async (key: keyof ToggleState, value: boolean): Promise<void> => {
@@ -158,14 +230,14 @@ export function Switches({ sessionId, openPanel }: SwitchesProps): React.ReactEl
       if (result.ok) {
         setView((current) => (current === null ? current : { ...current, toggles: result.value.toggles }))
         setFailure(null)
-        // The browser connects after the answer, so the fact catches up on the
-        // next read rather than in this response.
-        void refresh()
+        // The browser connects after the answer, so read again now rather than
+        // waiting out the cadence; the poller dedups a read already in flight.
+        poller.current?.refreshNow()
       } else {
         setFailure(result.message)
       }
     },
-    [refresh, sessionId],
+    [sessionId],
   )
 
   if (sessionId === '') return null

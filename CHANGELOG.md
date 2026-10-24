@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The WebUI-wide stalls: the dock row polled for every mounted conversation.**
+  The switch row is drawn once per keep-alive mounted conversation, and every one
+  of them called `/toolbridge/api/state` every 4 s — with ~20 conversations open
+  that is 5 requests/s against the browser's per-origin HTTP/1.1 pool (6 sockets,
+  one held by the HMR stream), so a single slow request stalled the whole page
+  behind it (20–90 s freezes whose length equalled the slowest in-flight request;
+  the host side was already proven pure-memory). The row now reads the shell's own
+  activity fact — the main view retains one session at a time
+  (`retainedBy.mainView`, the predicate `ui-session` and the layout use) — so an
+  inactive row reads once at mount, stops, and reads once more when it becomes
+  active. A read is scheduled from the end of the previous one, so a slow response
+  cannot stack another, and unmount aborts the read in flight (`fetchState` now
+  takes an abort signal) so no socket is left held. The sidebar panel's polling is
+  unchanged: it is one component per open tab, not one per mounted session.
+
 ## [1.1.0] - 2026-10-24
 
 ### Added

@@ -73,9 +73,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<Fetched<T>>
   }
 }
 
-/** Read one conversation's state, jobs and lane depth. */
-export function fetchState(sessionId: string): Promise<Fetched<SessionView>> {
-  return request<SessionView>(`/state?sessionId=${encodeURIComponent(sessionId)}`)
+/** Read one conversation's state, jobs and lane depth. The signal aborts the read. */
+export function fetchState(sessionId: string, signal?: AbortSignal): Promise<Fetched<SessionView>> {
+  return request<SessionView>(`/state?sessionId=${encodeURIComponent(sessionId)}`, { signal })
 }
 
 /** Read one job's log tail, for the panel's expanded row. */
